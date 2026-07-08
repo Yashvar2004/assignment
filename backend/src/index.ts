@@ -89,48 +89,51 @@ app.use(errorHandler);
 
 // ==================== Server Startup ====================
 
-async function startServer() {
-  try {
-    // Test database connection
-    await prisma.$connect();
-    logger.info('Database connected successfully');
-
-    // Test Redis connection (optional for development)
+// Only start server if not in Vercel serverless environment
+if (process.env.VERCEL !== '1') {
+  async function startServer() {
     try {
-      await redis.connect();
-      await redis.ping();
-      logger.info('Redis connected successfully');
-    } catch (redisError) {
-      logger.warn('Redis not available - job queue features will be disabled');
+      // Test database connection
+      await prisma.$connect();
+      logger.info('Database connected successfully');
+
+      // Test Redis connection (optional for development)
+      try {
+        await redis.connect();
+        await redis.ping();
+        logger.info('Redis connected successfully');
+      } catch (redisError) {
+        logger.warn('Redis not available - job queue features will be disabled');
+      }
+
+      // Start server
+      app.listen(config.port, () => {
+        logger.info(`Server running on port ${config.port}`);
+        logger.info(`Environment: ${config.nodeEnv}`);
+        logger.info(`Frontend URL: ${config.frontendUrl}`);
+      });
+    } catch (error: any) {
+      logger.error('Failed to start server', { error: error.message });
+      process.exit(1);
     }
-
-    // Start server
-    app.listen(config.port, () => {
-      logger.info(`Server running on port ${config.port}`);
-      logger.info(`Environment: ${config.nodeEnv}`);
-      logger.info(`Frontend URL: ${config.frontendUrl}`);
-    });
-  } catch (error: any) {
-    logger.error('Failed to start server', { error: error.message });
-    process.exit(1);
   }
+
+  // Handle graceful shutdown
+  process.on('SIGTERM', async () => {
+    logger.info('SIGTERM received, shutting down gracefully');
+    await prisma.$disconnect();
+    redis.disconnect();
+    process.exit(0);
+  });
+
+  process.on('SIGINT', async () => {
+    logger.info('SIGINT received, shutting down gracefully');
+    await prisma.$disconnect();
+    redis.disconnect();
+    process.exit(0);
+  });
+
+  startServer();
 }
-
-// Handle graceful shutdown
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM received, shutting down gracefully');
-  await prisma.$disconnect();
-  redis.disconnect();
-  process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-  logger.info('SIGINT received, shutting down gracefully');
-  await prisma.$disconnect();
-  redis.disconnect();
-  process.exit(0);
-});
-
-startServer();
 
 export default app;
