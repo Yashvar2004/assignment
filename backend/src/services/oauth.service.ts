@@ -2,6 +2,7 @@ import prisma from '../config/database';
 import { HubSpotService } from './hubspot.service';
 import logger from '../utils/logger';
 import { UnauthorizedError } from '../utils/errors';
+import { config } from '../config';
 
 /**
  * Manages HubSpot OAuth tokens including storage, refresh, and validation.
@@ -22,7 +23,7 @@ export class OAuthService {
     const tokens = await HubSpotService.exchangeCodeForTokens(code);
 
     // Get portal info to identify the account
-    const tempHubspot = new HubSpotService('temp', require('../config/redis').default);
+    const tempHubspot = new HubSpotService('temp');
     tempHubspot.setAccessToken(tokens.accessToken);
     const portalInfo = await tempHubspot.getPortalInfo();
 
@@ -128,7 +129,7 @@ export class OAuthService {
     // Try to validate the token
     try {
       const accessToken = await this.getValidAccessToken(userId);
-      const hubspot = new HubSpotService(user.hubspotPortalId, require('../config/redis').default);
+      const hubspot = new HubSpotService(user.hubspotPortalId);
       hubspot.setAccessToken(accessToken);
       await hubspot.getPortalInfo();
 
@@ -168,8 +169,5 @@ export class OAuthService {
     logger.info(`HubSpot account disconnected: ${user.portalName} (${user.hubspotPortalId})`);
   }
 }
-
-// Import config at the bottom to avoid circular dependency
-import { config } from '../config';
 
 export default OAuthService;

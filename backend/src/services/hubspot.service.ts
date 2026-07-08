@@ -2,9 +2,7 @@ import axios, { AxiosInstance, AxiosError } from 'axios';
 import { config } from '../config';
 import logger from '../utils/logger';
 import { HubSpotApiError, RateLimitError } from '../utils/errors';
-import { withRetry, isRetryableError, getRetryDelay, sleep } from '../utils/retry';
-import RateLimiter from '../utils/rate-limiter';
-import Redis from 'ioredis';
+import { withRetry, sleep } from '../utils/retry';
 
 interface HubSpotTokens {
   accessToken: string;
@@ -32,34 +30,18 @@ interface HubSpotPaginatedResponse<T> {
   total?: number;
 }
 
-interface HubSpotEngagement {
-  engagement: {
-    id: number;
-    type: string;
-    timestamp: number;
-  };
-  associations: {
-    contactIds: number[];
-    companyIds: number[];
-    dealIds: number[];
-    ownerIds: number[];
-  };
-  metadata: {
-    body: string;
-  };
-}
-
 /**
- * HubSpot API client with rate limiting, retry logic, and token management.
+ * HubSpot API client with retry logic.
+ * Works in serverless environments without Redis dependency.
  */
 export class HubSpotService {
   private client: AxiosInstance;
-  private rateLimiter: RateLimiter;
   private portalId: string;
+  private requestCount: number = 0;
+  private windowStart: number = Date.now();
 
-  constructor(portalId: string, redis: Redis) {
+  constructor(portalId: string) {
     this.portalId = portalId;
-    this.rateLimiter = new RateLimiter(redis);
 
     this.client = axios.create({
       baseURL: config.hubspot.apiBaseUrl,
@@ -94,6 +76,33 @@ export class HubSpotService {
         throw error;
       }
     );
+  }
+
+  /**
+   * Simple rate limiting without Redis (for serverless)
+   */
+  private async waitForRateLimit(): Promise<void> {
+    const now = Date.now();
+    const windowMs = config.sync.rateLimitWindow;
+
+    // Reset window if expired
+    if (now - this.windowStart > windowMs) {
+      this.requestCount = 0;
+      this.windowStart = now;
+    }
+
+    // Check if we're at the limit
+    if (this.requestCount >= config.sync.rateLimitRequests) {
+      const waitTime = windowMs - (now - this.windowStart) + 100;
+      if (waitTime > 0) {
+        logger.debug(`Rate limit reached, waiting ${waitTime}ms`);
+        await sleep(waitTime);
+        this.requestCount = 0;
+        this.windowStart = Date.now();
+      }
+    }
+
+    this.requestCount++;
   }
 
   /**
@@ -192,7 +201,6 @@ export class HubSpotService {
 
   /**
    * Fetch contacts with pagination support.
-   * Returns a page of contacts and the cursor for the next page.
    */
   async getContacts(options?: {
     after?: string;
@@ -220,8 +228,8 @@ export class HubSpotService {
 
     return withRetry(
       async () => {
-        // Wait for rate limit slot
-        await this.rateLimiter.waitForSlot(this.portalId);
+        // Wait for rate limit
+        await this.waitForRateLimit();
 
         const params: Record<string, any> = {
           limit,
@@ -250,36 +258,10 @@ export class HubSpotService {
   }
 
   /**
-   * Fetch all contacts using cursor-based pagination.
-   * Yields batches for memory-efficient processing.
-   */
-  async *getAllContactsBatch(
-    properties?: string[]
-  ): AsyncGenerator<{ contacts: HubSpotContact[]; cursor?: string }> {
-    let after: string | undefined;
-    let hasMore = true;
-
-    while (hasMore) {
-      const response = await this.getContacts({ after, properties });
-
-      yield {
-        contacts: response.results,
-        cursor: response.paging?.next?.after,
-      };
-
-      if (response.paging?.next?.after) {
-        after = response.paging.next.after;
-      } else {
-        hasMore = false;
-      }
-    }
-  }
-
-  /**
    * Get total contact count for the portal
    */
   async getContactCount(): Promise<number> {
-    await this.rateLimiter.waitForSlot(this.portalId);
+    await this.waitForRateLimit();
 
     try {
       const response = await this.client.get('/crm/v3/objects/contacts', {
@@ -300,7 +282,7 @@ export class HubSpotService {
   async createNote(contactHubspotId: string, body: string): Promise<number> {
     return withRetry(
       async () => {
-        await this.rateLimiter.waitForSlot(this.portalId);
+        await this.waitForRateLimit();
 
         const timestamp = Date.now();
 
@@ -341,7 +323,7 @@ export class HubSpotService {
    * Get notes/engagements for a specific contact
    */
   async getContactNotes(contactHubspotId: string): Promise<any[]> {
-    await this.rateLimiter.waitForSlot(this.portalId);
+    await this.waitForRateLimit();
 
     try {
       const response = await this.client.get(
@@ -370,7 +352,7 @@ export class HubSpotService {
    * Get portal/account info to verify the connection
    */
   async getPortalInfo(): Promise<any> {
-    await this.rateLimiter.waitForSlot(this.portalId);
+    await this.waitForRateLimit();
 
     try {
       const response = await this.client.get('/account-info/v3/details');

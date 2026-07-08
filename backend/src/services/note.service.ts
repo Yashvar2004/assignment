@@ -1,5 +1,4 @@
 import prisma from '../config/database';
-import redis from '../config/redis';
 import { HubSpotService } from './hubspot.service';
 import { OAuthService } from './oauth.service';
 import logger from '../utils/logger';
@@ -39,12 +38,15 @@ export class NoteService {
       },
     });
 
-    // Attempt to sync to HubSpot immediately
-    this.syncNoteToHubspot(note.id, userId, contact.hubspotId).catch((error) => {
-      logger.error(`Background note sync failed for note ${note.id}`, {
+    // Attempt to sync to HubSpot immediately (inline, not background)
+    try {
+      await this.syncNoteToHubspot(note.id, userId, contact.hubspotId);
+    } catch (error: any) {
+      logger.error(`Note sync failed for note ${note.id}`, {
         error: error.message,
       });
-    });
+      // Note is still saved, sync can be retried later
+    }
 
     return note;
   }
@@ -75,7 +77,7 @@ export class NoteService {
       }
 
       // Create engagement in HubSpot
-      const hubspot = new HubSpotService(user.hubspotPortalId, redis);
+      const hubspot = new HubSpotService(user.hubspotPortalId);
       hubspot.setAccessToken(accessToken);
 
       const engagementId = await hubspot.createNote(contactHubspotId, note.body);
@@ -201,7 +203,7 @@ export class NoteService {
   }
 
   /**
-   * Delete a note (only if not synced to HubSpot, or soft delete)
+   * Delete a note
    */
   static async deleteNote(noteId: string, userId: string): Promise<void> {
     const note = await prisma.note.findFirst({
@@ -215,8 +217,6 @@ export class NoteService {
       throw new Error('Note not found');
     }
 
-    // If synced to HubSpot, we just delete locally
-    // In production, you might want to delete the engagement from HubSpot too
     await prisma.note.delete({
       where: { id: noteId },
     });

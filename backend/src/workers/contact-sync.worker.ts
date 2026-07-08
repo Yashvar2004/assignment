@@ -1,5 +1,4 @@
 import { Worker, Job } from 'bullmq';
-import Redis from 'ioredis';
 import { config } from '../config';
 import prisma from '../config/database';
 import { HubSpotService } from '../services/hubspot.service';
@@ -15,7 +14,7 @@ interface ContactSyncJobData {
 
 /**
  * Worker that processes contact synchronization jobs.
- * Processes contacts in batches with cursor-based pagination for resumability.
+ * Only used when Redis is available (not in Vercel serverless).
  */
 const contactSyncWorker = new Worker(
   'contact-sync',
@@ -35,9 +34,8 @@ const contactSyncWorker = new Worker(
         throw new Error('User not found');
       }
 
-      // Create HubSpot client with rate limiting
-      const redis = new Redis(config.redis.url);
-      const hubspot = new HubSpotService(user.hubspotPortalId, redis);
+      // Create HubSpot client
+      const hubspot = new HubSpotService(user.hubspotPortalId);
       hubspot.setAccessToken(accessToken);
 
       // Fetch a batch of contacts
@@ -50,7 +48,6 @@ const contactSyncWorker = new Worker(
 
       if (contacts.length === 0) {
         logger.info(`No more contacts to sync for job ${jobId}`);
-        await redis.quit();
         return { done: true, processed: 0 };
       }
 
@@ -133,19 +130,17 @@ const contactSyncWorker = new Worker(
         );
       } else {
         // Sync complete - update job status
-        const job = await prisma.syncJob.findUnique({ where: { id: jobId } });
+        const syncJob = await prisma.syncJob.findUnique({ where: { id: jobId } });
         await prisma.syncJob.update({
           where: { id: jobId },
           data: {
-            status: (job?.failed || 0) + failed > 0 ? 'completed_with_errors' : 'completed',
+            status: (syncJob?.failed || 0) + failed > 0 ? 'completed_with_errors' : 'completed',
             completedAt: new Date(),
           },
         });
 
         logger.info(`Contact sync completed for job ${jobId}`);
       }
-
-      await redis.quit();
 
       return {
         done: !response.paging?.next?.after,

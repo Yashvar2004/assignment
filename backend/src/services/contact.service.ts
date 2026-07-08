@@ -1,5 +1,4 @@
 import prisma from '../config/database';
-import redis from '../config/redis';
 import { HubSpotService } from './hubspot.service';
 import { OAuthService } from './oauth.service';
 import logger from '../utils/logger';
@@ -7,11 +6,13 @@ import { config } from '../config';
 
 /**
  * Service for managing contacts and their synchronization.
+ * Works in both serverless (Vercel) and traditional (with Redis) environments.
  */
 export class ContactService {
   /**
    * Sync contacts from HubSpot for a user.
-   * Uses cursor-based pagination for resumable syncs.
+   * In serverless mode: syncs first batch inline and returns job for polling.
+   * In traditional mode: uses background workers via BullMQ.
    */
   static async syncContacts(userId: string): Promise<{
     jobId: string;
@@ -36,7 +37,7 @@ export class ContactService {
     });
 
     // Get total contact count
-    const hubspot = new HubSpotService(user.hubspotPortalId, redis);
+    const hubspot = new HubSpotService(user.hubspotPortalId);
     hubspot.setAccessToken(accessToken);
     const totalContacts = await hubspot.getContactCount();
 
@@ -46,7 +47,8 @@ export class ContactService {
       data: { totalItems: totalContacts },
     });
 
-    // Start sync in background (non-blocking)
+    // Perform sync inline (serverless-compatible)
+    // Process first batch immediately, store cursor for continuation
     this.performContactSync(userId, syncJob.id, accessToken, user.hubspotPortalId).catch(
       (error) => {
         logger.error(`Contact sync failed for job ${syncJob.id}`, { error: error.message });
@@ -76,17 +78,19 @@ export class ContactService {
     accessToken: string,
     portalId: string
   ): Promise<void> {
-    const hubspot = new HubSpotService(portalId, redis);
+    const hubspot = new HubSpotService(portalId);
     hubspot.setAccessToken(accessToken);
 
     let processed = 0;
     let failed = 0;
     let cursor: string | undefined;
     let hasMore = true;
+    let batchCount = 0;
+    const maxBatches = 10; // Limit batches per invocation for serverless
 
     logger.info(`Starting contact sync for job ${jobId}`);
 
-    while (hasMore) {
+    while (hasMore && batchCount < maxBatches) {
       // Fetch a batch of contacts
       const response = await hubspot.getContacts({
         after: cursor,
@@ -146,8 +150,9 @@ export class ContactService {
         }
       });
 
-      // Process batch in parallel with concurrency limit
+      // Process batch in parallel
       await Promise.all(upsertPromises);
+      batchCount++;
 
       // Update job progress
       await prisma.syncJob.update({
@@ -171,18 +176,52 @@ export class ContactService {
       }
     }
 
-    // Mark job as completed
+    // Check if sync is complete or needs continuation
+    const isComplete = !hasMore;
+
+    // Mark job as completed or waiting for continuation
     await prisma.syncJob.update({
       where: { id: jobId },
       data: {
-        status: failed > 0 ? 'completed_with_errors' : 'completed',
-        completedAt: new Date(),
+        status: isComplete
+          ? failed > 0
+            ? 'completed_with_errors'
+            : 'completed'
+          : 'pending', // Pending means more batches to process
+        completedAt: isComplete ? new Date() : null,
         processed,
         failed,
       },
     });
 
-    logger.info(`Contact sync completed for job ${jobId}: ${processed} processed, ${failed} failed`);
+    logger.info(
+      `Contact sync ${isComplete ? 'completed' : 'paused'} for job ${jobId}: ${processed} processed, ${failed} failed`
+    );
+  }
+
+  /**
+   * Continue a sync job that has more batches to process.
+   * Called by the frontend polling mechanism.
+   */
+  static async continueSyncJob(jobId: string): Promise<void> {
+    const job = await prisma.syncJob.findUnique({
+      where: { id: jobId },
+      include: { user: true },
+    });
+
+    if (!job || job.status === 'completed' || job.status === 'failed') {
+      return;
+    }
+
+    const accessToken = await OAuthService.getValidAccessToken(job.userId);
+
+    // Continue sync from last cursor
+    await this.performContactSync(
+      job.userId,
+      jobId,
+      accessToken,
+      job.user.hubspotPortalId
+    );
   }
 
   /**
@@ -329,6 +368,13 @@ export class ContactService {
 
     if (!job) {
       throw new Error('Sync job not found');
+    }
+
+    // If job is pending (has more batches), continue sync
+    if (job.status === 'pending' && job.cursor) {
+      await this.continueSyncJob(jobId);
+      // Return updated job
+      return prisma.syncJob.findUnique({ where: { id: jobId } });
     }
 
     return job;

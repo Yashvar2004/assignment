@@ -1,5 +1,4 @@
 import { Worker, Job } from 'bullmq';
-import Redis from 'ioredis';
 import { config } from '../config';
 import prisma from '../config/database';
 import { HubSpotService } from '../services/hubspot.service';
@@ -15,7 +14,7 @@ interface NoteSyncJobData {
 
 /**
  * Worker that processes note synchronization jobs.
- * Syncs notes created in the app back to HubSpot as engagements.
+ * Only used when Redis is available (not in Vercel serverless).
  */
 const noteSyncWorker = new Worker(
   'note-sync',
@@ -51,8 +50,7 @@ const noteSyncWorker = new Worker(
       }
 
       // Create HubSpot client
-      const redis = new Redis(config.redis.url);
-      const hubspot = new HubSpotService(user.hubspotPortalId, redis);
+      const hubspot = new HubSpotService(user.hubspotPortalId);
       hubspot.setAccessToken(accessToken);
 
       // Create the note engagement in HubSpot
@@ -68,8 +66,6 @@ const noteSyncWorker = new Worker(
           lastSyncAttempt: new Date(),
         },
       });
-
-      await redis.quit();
 
       logger.info(`Note ${noteId} synced to HubSpot as engagement ${engagementId}`);
 
