@@ -8,6 +8,7 @@ interface AuthContextType {
   isLoading: boolean;
   checkConnection: () => Promise<void>;
   connectHubSpot: () => Promise<void>;
+  connectWithPat: () => Promise<void>;
   disconnect: () => Promise<void>;
   setToken: (token: string) => void;
   logout: () => void;
@@ -67,6 +68,17 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
+  const connectWithPat = async () => {
+    try {
+      const result = await authApi.connectWithPat();
+      setToken(result.token);
+      await checkConnection();
+    } catch (error) {
+      console.error('Failed to connect with PAT:', error);
+      throw error;
+    }
+  };
+
   const disconnect = async () => {
     try {
       await authApi.disconnect();
@@ -96,6 +108,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         isLoading,
         checkConnection,
         connectHubSpot,
+        connectWithPat,
         disconnect,
         setToken,
         logout,

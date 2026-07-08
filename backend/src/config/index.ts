@@ -17,8 +17,8 @@ export const config = {
   },
 
   hubspot: {
-    clientId: process.env.HUBSPOT_CLIENT_ID!,
-    clientSecret: process.env.HUBSPOT_CLIENT_SECRET!,
+    clientId: process.env.HUBSPOT_CLIENT_ID || '',
+    clientSecret: process.env.HUBSPOT_CLIENT_SECRET || '',
     redirectUri: process.env.HUBSPOT_REDIRECT_URI || 'http://localhost:3001/api/auth/hubspot/callback',
     scopes: [
       'oauth',
@@ -30,6 +30,7 @@ export const config = {
     apiBaseUrl: 'https://api.hubapi.com',
     authBaseUrl: 'https://app.hubspot.com/oauth/authorize',
     tokenUrl: 'https://api.hubapi.com/oauth/v1/token',
+    patToken: process.env.HUBSPOT_PAT_TOKEN || '',
   },
 
   jwt: {
@@ -51,10 +52,22 @@ export const config = {
 } as const;
 
 // Validate required environment variables
-const requiredEnvVars = ['DATABASE_URL', 'HUBSPOT_CLIENT_ID', 'HUBSPOT_CLIENT_SECRET'];
+// Only require OAuth credentials if PAT token is not set
+const requiredEnvVars = ['DATABASE_URL'];
+
+if (!process.env.HUBSPOT_PAT_TOKEN) {
+  requiredEnvVars.push('HUBSPOT_CLIENT_ID', 'HUBSPOT_CLIENT_SECRET');
+}
 
 for (const envVar of requiredEnvVars) {
   if (!process.env[envVar]) {
     console.warn(`Warning: Missing environment variable: ${envVar}`);
   }
+}
+
+// Log auth mode
+if (process.env.HUBSPOT_PAT_TOKEN) {
+  console.log('HubSpot: Using Personal Access Token (PAT) authentication');
+} else {
+  console.log('HubSpot: Using OAuth authentication');
 }

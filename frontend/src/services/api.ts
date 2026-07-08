@@ -63,6 +63,16 @@ export const authApi = {
   },
 
   /**
+   * Connect using Personal Access Token (PAT)
+   */
+  connectWithPat: async (): Promise<{ token: string; portalName: string; portalId: string }> => {
+    const response = await api.post<ApiResponse<{ token: string; portalName: string; portalId: string }>>(
+      '/auth/connect-pat'
+    );
+    return response.data.data;
+  },
+
+  /**
    * Disconnect HubSpot account
    */
   disconnect: async (): Promise<void> => {

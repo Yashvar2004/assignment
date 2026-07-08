@@ -42,8 +42,14 @@ app.get('/health', async (req, res) => {
     // Check database connection
     await prisma.$queryRaw`SELECT 1`;
 
-    // Check Redis connection
-    await redis.ping();
+    // Check Redis connection (optional)
+    let redisStatus = 'not available';
+    try {
+      await redis.ping();
+      redisStatus = 'connected';
+    } catch {
+      // Redis not available, that's OK
+    }
 
     res.json({
       success: true,
@@ -52,6 +58,8 @@ app.get('/health', async (req, res) => {
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
         environment: config.nodeEnv,
+        database: 'connected',
+        redis: redisStatus,
       },
     });
   } catch (error: any) {
@@ -87,9 +95,14 @@ async function startServer() {
     await prisma.$connect();
     logger.info('Database connected successfully');
 
-    // Test Redis connection
-    await redis.ping();
-    logger.info('Redis connected successfully');
+    // Test Redis connection (optional for development)
+    try {
+      await redis.connect();
+      await redis.ping();
+      logger.info('Redis connected successfully');
+    } catch (redisError) {
+      logger.warn('Redis not available - job queue features will be disabled');
+    }
 
     // Start server
     app.listen(config.port, () => {

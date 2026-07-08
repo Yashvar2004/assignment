@@ -32,12 +32,24 @@ app.use(express.urlencoded({ extended: true }));
 app.get('/health', async (req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
+
+    let redisStatus = 'not available';
+    try {
+      const { default: redis } = await import('../src/config/redis');
+      await redis.ping();
+      redisStatus = 'connected';
+    } catch {
+      // Redis not available
+    }
+
     res.json({
       success: true,
       data: {
         status: 'healthy',
         timestamp: new Date().toISOString(),
         environment: config.nodeEnv,
+        database: 'connected',
+        redis: redisStatus,
       },
     });
   } catch (error: any) {
