@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { authApi } from '../services/api';
-import { ConnectionStatus } from '../types';
+import type { ConnectionStatus } from '../types';
 
 interface AuthContextType {
   isAuthenticated: boolean;

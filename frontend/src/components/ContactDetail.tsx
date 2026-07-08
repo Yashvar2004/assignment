@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { contactsApi, notesApi } from '../services/api';
-import { Contact, Note } from '../types';
+import type { Contact, Note } from '../types';
 import toast from 'react-hot-toast';
 
 const ContactDetail: React.FC = () => {

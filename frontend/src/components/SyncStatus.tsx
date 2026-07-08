@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { contactsApi, notesApi } from '../services/api';
-import { SyncJob, NoteSyncStatus } from '../types';
+import type { SyncJob, NoteSyncStatus } from '../types';
 
 const SyncStatus: React.FC = () => {
   const [syncJobs, setSyncJobs] = useState<SyncJob[]>([]);

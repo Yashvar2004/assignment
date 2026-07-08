@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { contactsApi } from '../services/api';
-import { Contact, SyncJob } from '../types';
+import type { Contact, SyncJob } from '../types';
 
 const ContactList: React.FC = () => {
   const navigate = useNavigate();

@@ -1,5 +1,6 @@
-import axios, { AxiosInstance, InternalAxiosRequestConfig } from 'axios';
-import {
+import axios from 'axios';
+import type { AxiosInstance, InternalAxiosRequestConfig } from 'axios';
+import type {
   ApiResponse,
   Contact,
   ConnectionStatus,
