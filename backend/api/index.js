@@ -1,11 +1,22 @@
-const express = require('express');
-const cors = require('cors');
-const { PrismaClient } = require('@prisma/client');
-const jwt = require('jsonwebtoken');
-const axios = require('axios');
+let express, cors, PrismaClient, jwt, axios;
+
+try {
+  express = require('express');
+  cors = require('cors');
+  PrismaClient = require('@prisma/client').PrismaClient;
+  jwt = require('jsonwebtoken');
+  axios = require('axios');
+} catch (err) {
+  console.error('Failed to load dependencies:', err.message);
+}
 
 // Initialize Prisma
-const prisma = new PrismaClient();
+let prisma;
+try {
+  prisma = new PrismaClient();
+} catch (err) {
+  console.error('Failed to initialize Prisma:', err.message);
+}
 
 const app = express();
 
@@ -48,9 +59,26 @@ function authenticate(req, res, next) {
   }
 }
 
+// Simple test endpoint
+app.get('/test', (req, res) => {
+  res.json({
+    status: 'ok',
+    message: 'Backend is working',
+    timestamp: new Date().toISOString(),
+    env: {
+      NODE_ENV: process.env.NODE_ENV,
+      DATABASE_URL: process.env.DATABASE_URL ? 'set' : 'not set',
+      HUBSPOT_PAT_TOKEN: process.env.HUBSPOT_PAT_TOKEN ? 'set' : 'not set',
+    },
+  });
+});
+
 // Health check
 app.get('/health', async (req, res) => {
   try {
+    if (!prisma) {
+      throw new Error('Prisma not initialized');
+    }
     await prisma.$queryRaw`SELECT 1`;
     res.json({
       success: true,
