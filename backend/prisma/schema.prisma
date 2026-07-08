@@ -1,0 +1,115 @@
+// HubSpot Sync Application - Database Schema
+// PostgreSQL with Prisma ORM
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Stores HubSpot OAuth credentials for each connected portal
+model User {
+  id              String   @id @default(cuid())
+  hubspotPortalId String   @unique @map("hubspot_portal_id")
+  portalName      String?  @map("portal_name")
+  accessToken     String   @map("access_token")
+  refreshToken    String   @map("refresh_token")
+  tokenExpiresAt  DateTime @map("token_expires_at")
+  scopes          String?
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  contacts  Contact[]
+  syncJobs  SyncJob[]
+
+  @@map("users")
+}
+
+// Stores synchronized HubSpot contacts
+model Contact {
+  id              String   @id @default(cuid())
+  hubspotId       String   @unique @map("hubspot_id")
+  userId          String   @map("user_id")
+  email           String?
+  firstName       String?  @map("first_name")
+  lastName        String?  @map("last_name")
+  phone           String?
+  company         String?
+  jobTitle        String?  @map("job_title")
+  lifecycleStage  String?  @map("lifecycle_stage")
+  leadStatus      String?  @map("lead_status")
+  city            String?
+  country         String?
+  hsCreatedAt     DateTime? @map("hs_created_at")
+  hsUpdatedAt     DateTime? @map("hs_updated_at")
+  lastSyncedAt    DateTime @default(now()) @map("last_synced_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  notes Note[]
+
+  @@index([userId])
+  @@index([email])
+  @@index([lastSyncedAt])
+  @@map("contacts")
+}
+
+// Notes created in our app, synced to HubSpot as engagements
+model Note {
+  id              String   @id @default(cuid())
+  hubspotEngagementId String? @unique @map("hubspot_engagement_id")
+  contactId       String   @map("contact_id")
+  body            String
+  syncedToHubspot Boolean  @default(false) @map("synced_to_hubspot")
+  syncAttempts    Int      @default(0) @map("sync_attempts")
+  lastSyncError   String?  @map("last_sync_error")
+  lastSyncAttempt DateTime? @map("last_sync_attempt")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([contactId])
+  @@index([syncedToHubspot])
+  @@index([createdAt])
+  @@map("notes")
+}
+
+// Tracks background sync jobs for progress monitoring
+model SyncJob {
+  id            String    @id @default(cuid())
+  userId        String    @map("user_id")
+  type          String    // 'contact_sync' | 'note_sync' | 'full_sync'
+  status        String    @default("pending") // 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  totalItems    Int?      @map("total_items")
+  processed     Int       @default(0)
+  failed        Int       @default(0)
+  cursor        String?   // For resumable syncs
+  startedAt     DateTime? @map("started_at")
+  completedAt   DateTime? @map("completed_at")
+  error         String?
+  metadata      String?   // Additional job metadata (JSON string)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([type, status])
+  @@map("sync_jobs")
+}
+
+// Rate limiting tracking per portal
+model RateLimitState {
+  id          String   @id @default(cuid())
+  portalId    String   @unique @map("portal_id")
+  requestCount Int     @default(0) @map("request_count")
+  windowStart DateTime @default(now()) @map("window_start")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("rate_limit_state")
+}
