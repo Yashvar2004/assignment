@@ -258,8 +258,21 @@ app.post('/api/auth/disconnect', authenticate, async (req, res) => {
 async function syncContactsInBackground(userId, accessToken) {
   if (!prisma) return;
   try {
+    // First, get the total count from HubSpot
+    const countResponse = await axios.get('https://api.hubapi.com/crm/v3/objects/contacts', {
+      params: { limit: 1, properties: 'email' },
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const totalContacts = countResponse.data.total || 0;
+
     const syncJob = await prisma.syncJob.create({
-      data: { userId, type: 'contact_sync', status: 'running', startedAt: new Date() },
+      data: {
+        userId,
+        type: 'contact_sync',
+        status: 'running',
+        totalItems: totalContacts,
+        startedAt: new Date()
+      },
     });
 
     const response = await axios.get('https://api.hubapi.com/crm/v3/objects/contacts', {
@@ -309,6 +322,12 @@ async function syncContactsInBackground(userId, accessToken) {
           },
         });
         processed++;
+
+        // Update progress in real-time
+        await prisma.syncJob.update({
+          where: { id: syncJob.id },
+          data: { processed, failed },
+        });
       } catch (err) {
         failed++;
       }
@@ -318,7 +337,6 @@ async function syncContactsInBackground(userId, accessToken) {
       where: { id: syncJob.id },
       data: {
         status: failed > 0 ? 'completed_with_errors' : 'completed',
-        totalItems: contacts.length,
         processed,
         failed,
         completedAt: new Date(),
