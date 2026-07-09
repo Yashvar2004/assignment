@@ -17,26 +17,8 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
     return (
       <div className="min-h-[60vh] flex items-center justify-center">
         <div className="text-center">
-          <svg
-            className="animate-spin h-8 w-8 text-orange-500 mx-auto"
-            fill="none"
-            viewBox="0 0 24 24"
-          >
-            <circle
-              className="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              strokeWidth="4"
-            />
-            <path
-              className="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-            />
-          </svg>
-          <p className="mt-2 text-gray-600">Loading...</p>
+          <div className="spinner w-12 h-12 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading...</p>
         </div>
       </div>
     );
@@ -68,25 +50,10 @@ const AppContent: React.FC = () => {
             element={
               isLoading ? (
                 <div className="min-h-[60vh] flex items-center justify-center">
-                  <svg
-                    className="animate-spin h-8 w-8 text-orange-500"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    />
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    />
-                  </svg>
+                  <div className="text-center">
+                    <div className="spinner w-12 h-12 mx-auto mb-4"></div>
+                    <p className="text-gray-600">Loading...</p>
+                  </div>
                 </div>
               ) : !isAuthenticated || !connectionStatus?.connected ? (
                 <ConnectButton />
@@ -121,14 +88,19 @@ const AppContent: React.FC = () => {
       </main>
 
       {/* Footer */}
-      <footer className="bg-white border-t border-gray-200 py-6">
+      <footer className="bg-white/80 backdrop-blur-md border-t border-gray-200/50 py-8 mt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center">
+          <div className="flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0">
+            <div className="flex items-center space-x-3">
+              <div className="w-8 h-8 bg-gradient-to-br from-orange-400 to-orange-500 rounded-lg flex items-center justify-center">
+                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              </div>
+              <span className="font-semibold text-gray-900">HubSpot Sync</span>
+            </div>
             <p className="text-sm text-gray-500">
-              HubSpot Sync - Contact Management Integration
-            </p>
-            <p className="text-sm text-gray-400">
-              Built with React, Node.js, and HubSpot API
+              Contact Management Integration • Built with React, Node.js & HubSpot API
             </p>
           </div>
         </div>
