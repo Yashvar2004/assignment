@@ -2,6 +2,12 @@
 
 A production-ready full-stack application that integrates with HubSpot using OAuth, automatically synchronizes contacts, and keeps notes synchronized between the application and HubSpot.
 
+## 🌐 Live Demo
+
+- **Frontend**: https://hubspot-sync-frontend.vercel.app
+- **Backend**: https://hubspot-sync-backend.vercel.app
+- **GitHub**: https://github.com/Yashvar2004/assignment
+
 ## 📋 Table of Contents
 
 - [Project Overview](#project-overview)
