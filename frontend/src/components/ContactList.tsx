@@ -40,7 +40,11 @@ const ContactList: React.FC = () => {
   }, [fetchContacts]);
 
   useEffect(() => {
-    if (!syncJob || syncJob.status === 'completed' || syncJob.status === 'failed') {
+    if (!syncJob || syncJob.status === 'completed' || syncJob.status === 'failed' || syncJob.status === 'completed_with_errors') {
+      if (syncJob && (syncJob.status === 'completed' || syncJob.status === 'completed_with_errors')) {
+        setIsSyncing(false);
+        fetchContacts();
+      }
       return;
     }
 
@@ -49,14 +53,14 @@ const ContactList: React.FC = () => {
         const job = await contactsApi.getSyncJobStatus(syncJob.id);
         setSyncJob(job);
 
-        if (job.status === 'completed' || job.status === 'failed') {
+        if (job.status === 'completed' || job.status === 'failed' || job.status === 'completed_with_errors') {
           setIsSyncing(false);
           fetchContacts();
         }
       } catch (error) {
         console.error('Failed to poll sync status:', error);
       }
-    }, 2000);
+    }, 1000);
 
     return () => clearInterval(interval);
   }, [syncJob, fetchContacts]);
@@ -67,6 +71,11 @@ const ContactList: React.FC = () => {
       const result = await contactsApi.syncContacts();
       const job = await contactsApi.getSyncJobStatus(result.jobId);
       setSyncJob(job);
+
+      // Also refresh contacts after a short delay
+      setTimeout(() => {
+        fetchContacts();
+      }, 3000);
     } catch (error) {
       console.error('Failed to start sync:', error);
       setIsSyncing(false);
@@ -94,25 +103,37 @@ const ContactList: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={handleSync}
-          disabled={isSyncing}
-          className="btn-primary inline-flex items-center"
-        >
-          {isSyncing ? (
-            <>
-              <div className="spinner w-4 h-4 mr-2 border-2 border-white border-t-transparent"></div>
-              Syncing...
-            </>
-          ) : (
-            <>
-              <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              Sync Contacts
-            </>
-          )}
-        </button>
+        <div className="flex space-x-3">
+          <button
+            onClick={() => fetchContacts()}
+            disabled={isLoading}
+            className="px-4 py-2 text-sm font-medium border border-gray-300 rounded-lg hover:bg-gray-50 transition-all inline-flex items-center"
+          >
+            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            Refresh
+          </button>
+          <button
+            onClick={handleSync}
+            disabled={isSyncing}
+            className="btn-primary inline-flex items-center"
+          >
+            {isSyncing ? (
+              <>
+                <div className="spinner w-4 h-4 mr-2 border-2 border-white border-t-transparent"></div>
+                Syncing...
+              </>
+            ) : (
+              <>
+                <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Sync Contacts
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Sync Progress */}
