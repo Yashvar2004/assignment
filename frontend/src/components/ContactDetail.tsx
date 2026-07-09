@@ -17,6 +17,13 @@ const ContactDetail: React.FC = () => {
     if (id) {
       fetchContact(id);
       fetchNotes(id);
+
+      // Poll notes every 3 seconds to pick up sync status
+      const interval = setInterval(() => {
+        fetchNotes(id);
+      }, 3000);
+
+      return () => clearInterval(interval);
     }
   }, [id]);
 
@@ -50,6 +57,11 @@ const ContactDetail: React.FC = () => {
       setNotes((prev) => [note, ...prev]);
       setNewNote('');
       toast.success('Note added and syncing to HubSpot');
+
+      // Refresh notes after a short delay to get sync status
+      setTimeout(() => {
+        if (id) fetchNotes(id);
+      }, 2000);
     } catch (error) {
       console.error('Failed to add note:', error);
       toast.error('Failed to add note');
