@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "cd backend && npm install && npx prisma generate && cd ..",
-    "postinstall": "cd backend && npm install && npx prisma generate && cd .."
+    "build": "cd backend && npm install && npx prisma generate && cd ../frontend && npm install && npm run build"
   }
 }

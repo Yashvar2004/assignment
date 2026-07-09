@@ -132,13 +132,6 @@ export const contactsApi = {
     const response = await api.get<ApiResponse<SyncJob>>(`/contacts/sync/jobs/${jobId}`);
     return response.data.data;
   },
-
-  /**
-   * Resume a failed sync job
-   */
-  resumeSyncJob: async (jobId: string): Promise<void> => {
-    await api.post(`/contacts/sync/jobs/${jobId}/resume`);
-  },
 };
 
 // ==================== Notes API ====================

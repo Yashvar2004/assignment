@@ -3,9 +3,8 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
 
+// Initialize Prisma with error handling
 let prisma = null;
-
-// Try to initialize Prisma
 try {
   const { PrismaClient } = require('@prisma/client');
   prisma = new PrismaClient();
@@ -16,20 +15,22 @@ try {
 
 const app = express();
 
+// CORS configuration
 app.use(cors({
   origin: [
     'http://localhost:5173',
     'https://frontend-nine-bay-26.vercel.app',
-    'https://hubspot-sync-backend.vercel.app',
     /\.vercel\.app$/,
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// JWT configuration
 const JWT_SECRET = process.env.JWT_SECRET || 'hubspot-sync-jwt-secret-2026';
 
 function generateToken(userId) {
@@ -40,6 +41,7 @@ function verifyToken(token) {
   return jwt.verify(token, JWT_SECRET);
 }
 
+// Authentication middleware
 function authenticate(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -54,33 +56,20 @@ function authenticate(req, res, next) {
   }
 }
 
-// Test endpoint
-app.get('/test', (req, res) => {
-  res.json({
-    status: 'ok',
-    message: 'Backend is working',
-    timestamp: new Date().toISOString(),
-    prisma: prisma ? 'connected' : 'not connected',
-  });
-});
+// ==================== HEALTH CHECK ====================
 
-// Health check
 app.get('/health', async (req, res) => {
-  if (!prisma) {
-    return res.status(503).json({
-      success: false,
-      error: { status: 'unhealthy', message: 'Prisma not initialized' },
-    });
-  }
   try {
-    await prisma.$queryRaw`SELECT 1`;
+    if (prisma) {
+      await prisma.$queryRaw`SELECT 1`;
+    }
     res.json({
       success: true,
       data: {
         status: 'healthy',
         timestamp: new Date().toISOString(),
         environment: process.env.NODE_ENV || 'development',
-        database: 'connected',
+        database: prisma ? 'connected' : 'not available',
       },
     });
   } catch (error) {
@@ -91,21 +80,95 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// ==================== AUTH ROUTES ====================
+// ==================== OAUTH ROUTES ====================
 
-// Get OAuth URL
+// Get HubSpot OAuth authorization URL
 app.get('/api/auth/hubspot', (req, res) => {
   const clientId = process.env.HUBSPOT_CLIENT_ID;
-  if (!clientId) {
-    return res.status(400).json({ success: false, error: { message: 'OAuth not configured. Use PAT token instead.' } });
-  }
   const redirectUri = process.env.HUBSPOT_REDIRECT_URI || `${process.env.FRONTEND_URL}/auth/callback`;
+
+  if (!clientId) {
+    return res.status(400).json({
+      success: false,
+      error: { message: 'HubSpot OAuth not configured. Please set HUBSPOT_CLIENT_ID environment variable.' },
+    });
+  }
+
   const scopes = ['oauth', 'contacts', 'tickets', 'timeline'].join(' ');
   const url = `https://app.hubspot.com/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}&response_type=code`;
+
   res.json({ success: true, data: { url } });
 });
 
-// Connect with PAT token
+// Handle OAuth callback
+app.get('/api/auth/hubspot/callback', async (req, res) => {
+  if (!prisma) {
+    return res.redirect(`${process.env.FRONTEND_URL}/auth/callback?error=Database not available`);
+  }
+
+  try {
+    const { code } = req.query;
+    if (!code) {
+      return res.redirect(`${process.env.FRONTEND_URL}/auth/callback?error=No authorization code`);
+    }
+
+    // Exchange code for tokens
+    const tokenResponse = await axios.post('https://api.hubapi.com/oauth/v1/token',
+      new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: process.env.HUBSPOT_CLIENT_ID,
+        client_secret: process.env.HUBSPOT_CLIENT_SECRET,
+        redirect_uri: process.env.HUBSPOT_REDIRECT_URI || `${process.env.FRONTEND_URL}/auth/callback`,
+        code,
+      }).toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+
+    const { access_token, refresh_token, expires_in } = tokenResponse.data;
+
+    // Get portal info
+    const portalResponse = await axios.get('https://api.hubapi.com/account-info/v3/details', {
+      headers: { Authorization: `Bearer ${access_token}` },
+    });
+
+    const portalId = String(portalResponse.data.portalId);
+    const portalName = portalResponse.data.accountName || `Portal ${portalId}`;
+    const tokenExpiresAt = new Date(Date.now() + expires_in * 1000);
+
+    // Create or update user
+    const user = await prisma.user.upsert({
+      where: { hubspotPortalId: portalId },
+      update: {
+        accessToken: access_token,
+        refreshToken: refresh_token,
+        tokenExpiresAt,
+        portalName,
+        updatedAt: new Date(),
+      },
+      create: {
+        hubspotPortalId: portalId,
+        portalName,
+        accessToken: access_token,
+        refreshToken: refresh_token,
+        tokenExpiresAt,
+        scopes: 'oauth,contacts,tickets,timeline',
+      },
+    });
+
+    const token = generateToken(user.id);
+
+    // Auto-sync contacts after OAuth
+    syncContactsInBackground(user.id, access_token);
+
+    // Redirect to frontend with token
+    res.redirect(`${process.env.FRONTEND_URL}/auth/callback?token=${token}&portalName=${encodeURIComponent(portalName)}`);
+  } catch (error) {
+    console.error('OAuth callback error:', error.message);
+    res.redirect(`${process.env.FRONTEND_URL}/auth/callback?error=${encodeURIComponent(error.message)}`);
+  }
+});
+
+// Connect with PAT token (fallback)
 app.post('/api/auth/connect-pat', async (req, res) => {
   if (!prisma) {
     return res.status(503).json({ success: false, error: { message: 'Database not available' } });
@@ -117,6 +180,7 @@ app.post('/api/auth/connect-pat', async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'No PAT token configured' } });
     }
 
+    // Test the PAT token
     const response = await axios.get('https://api.hubapi.com/account-info/v3/details', {
       headers: { Authorization: `Bearer ${patToken}` },
     });
@@ -124,6 +188,7 @@ app.post('/api/auth/connect-pat', async (req, res) => {
     const portalId = String(response.data.portalId);
     const portalName = response.data.accountName || `Portal ${portalId}`;
 
+    // Create or update user
     const user = await prisma.user.upsert({
       where: { hubspotPortalId: portalId },
       update: {
@@ -154,66 +219,6 @@ app.post('/api/auth/connect-pat', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, error: { message: error.message } });
-  }
-});
-
-// OAuth callback
-app.get('/api/auth/hubspot/callback', async (req, res) => {
-  if (!prisma) {
-    return res.redirect(`${process.env.FRONTEND_URL}/auth/callback?error=Database not available`);
-  }
-
-  try {
-    const { code } = req.query;
-    if (!code) {
-      return res.redirect(`${process.env.FRONTEND_URL}/auth/callback?error=No authorization code`);
-    }
-
-    const tokenResponse = await axios.post('https://api.hubapi.com/oauth/v1/token',
-      new URLSearchParams({
-        grant_type: 'authorization_code',
-        client_id: process.env.HUBSPOT_CLIENT_ID,
-        client_secret: process.env.HUBSPOT_CLIENT_SECRET,
-        redirect_uri: process.env.HUBSPOT_REDIRECT_URI || `${process.env.FRONTEND_URL}/auth/callback`,
-        code,
-      }).toString(),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
-
-    const { access_token, refresh_token, expires_in } = tokenResponse.data;
-
-    const portalResponse = await axios.get('https://api.hubapi.com/account-info/v3/details', {
-      headers: { Authorization: `Bearer ${access_token}` },
-    });
-
-    const portalId = String(portalResponse.data.portalId);
-    const portalName = portalResponse.data.accountName || `Portal ${portalId}`;
-
-    const user = await prisma.user.upsert({
-      where: { hubspotPortalId: portalId },
-      update: {
-        accessToken: access_token,
-        refreshToken: refresh_token,
-        tokenExpiresAt: new Date(Date.now() + expires_in * 1000),
-        portalName,
-        updatedAt: new Date(),
-      },
-      create: {
-        hubspotPortalId: portalId,
-        portalName,
-        accessToken: access_token,
-        refreshToken: refresh_token,
-        tokenExpiresAt: new Date(Date.now() + expires_in * 1000),
-        scopes: 'oauth,contacts,tickets,timeline',
-      },
-    });
-
-    const token = generateToken(user.id);
-    syncContactsInBackground(user.id, access_token);
-
-    res.redirect(`${process.env.FRONTEND_URL}/auth/callback?token=${token}&portalName=${encodeURIComponent(portalName)}`);
-  } catch (error) {
-    res.redirect(`${process.env.FRONTEND_URL}/auth/callback?error=${encodeURIComponent(error.message)}`);
   }
 });
 
@@ -249,6 +254,7 @@ app.post('/api/auth/disconnect', authenticate, async (req, res) => {
 
 // ==================== CONTACT ROUTES ====================
 
+// Background contact sync
 async function syncContactsInBackground(userId, accessToken) {
   if (!prisma) return;
   try {
@@ -318,11 +324,14 @@ async function syncContactsInBackground(userId, accessToken) {
         completedAt: new Date(),
       },
     });
+
+    console.log(`Contact sync completed: ${processed} processed, ${failed} failed`);
   } catch (error) {
     console.error('Contact sync failed:', error.message);
   }
 }
 
+// Trigger contact sync
 app.post('/api/contacts/sync', authenticate, async (req, res) => {
   if (!prisma) {
     return res.status(503).json({ success: false, error: { message: 'Database not available' } });
@@ -343,6 +352,7 @@ app.post('/api/contacts/sync', authenticate, async (req, res) => {
   }
 });
 
+// Get contacts
 app.get('/api/contacts', authenticate, async (req, res) => {
   if (!prisma) {
     return res.status(503).json({ success: false, error: { message: 'Database not available' } });
@@ -383,6 +393,7 @@ app.get('/api/contacts', authenticate, async (req, res) => {
   }
 });
 
+// Get contact by ID
 app.get('/api/contacts/:id', authenticate, async (req, res) => {
   if (!prisma) {
     return res.status(503).json({ success: false, error: { message: 'Database not available' } });
@@ -400,6 +411,7 @@ app.get('/api/contacts/:id', authenticate, async (req, res) => {
   }
 });
 
+// Get sync jobs
 app.get('/api/contacts/sync/jobs', authenticate, async (req, res) => {
   if (!prisma) {
     return res.status(503).json({ success: false, error: { message: 'Database not available' } });
@@ -416,6 +428,7 @@ app.get('/api/contacts/sync/jobs', authenticate, async (req, res) => {
   }
 });
 
+// Get sync job status
 app.get('/api/contacts/sync/jobs/:jobId', authenticate, async (req, res) => {
   if (!prisma) {
     return res.status(503).json({ success: false, error: { message: 'Database not available' } });
@@ -433,6 +446,7 @@ app.get('/api/contacts/sync/jobs/:jobId', authenticate, async (req, res) => {
 
 // ==================== NOTE ROUTES ====================
 
+// Create note
 app.post('/api/contacts/:contactId/notes', authenticate, async (req, res) => {
   if (!prisma) {
     return res.status(503).json({ success: false, error: { message: 'Database not available' } });
@@ -448,6 +462,7 @@ app.post('/api/contacts/:contactId/notes', authenticate, async (req, res) => {
 
     const note = await prisma.note.create({ data: { contactId: contact.id, body } });
 
+    // Sync to HubSpot in background
     const user = await prisma.user.findUnique({ where: { id: req.userId } });
     if (user) {
       syncNoteToHubspot(note.id, contact.hubspotId, body, user.accessToken);
@@ -459,6 +474,7 @@ app.post('/api/contacts/:contactId/notes', authenticate, async (req, res) => {
   }
 });
 
+// Background note sync
 async function syncNoteToHubspot(noteId, contactHubspotId, body, accessToken) {
   if (!prisma) return;
   try {
@@ -476,7 +492,10 @@ async function syncNoteToHubspot(noteId, contactHubspotId, body, accessToken) {
       where: { id: noteId },
       data: { hubspotEngagementId: String(response.data.engagement.id), syncedToHubspot: true },
     });
+
+    console.log(`Note ${noteId} synced to HubSpot`);
   } catch (error) {
+    console.error(`Failed to sync note ${noteId}:`, error.message);
     await prisma.note.update({
       where: { id: noteId },
       data: {
@@ -488,6 +507,7 @@ async function syncNoteToHubspot(noteId, contactHubspotId, body, accessToken) {
   }
 }
 
+// Get notes for contact
 app.get('/api/contacts/:contactId/notes', authenticate, async (req, res) => {
   if (!prisma) {
     return res.status(503).json({ success: false, error: { message: 'Database not available' } });
@@ -513,6 +533,7 @@ app.get('/api/contacts/:contactId/notes', authenticate, async (req, res) => {
   }
 });
 
+// Delete note
 app.delete('/api/notes/:noteId', authenticate, async (req, res) => {
   if (!prisma) {
     return res.status(503).json({ success: false, error: { message: 'Database not available' } });
@@ -532,6 +553,7 @@ app.delete('/api/notes/:noteId', authenticate, async (req, res) => {
   }
 });
 
+// Note sync status
 app.get('/api/notes/sync-status', authenticate, async (req, res) => {
   if (!prisma) {
     return res.status(503).json({ success: false, error: { message: 'Database not available' } });
@@ -549,6 +571,7 @@ app.get('/api/notes/sync-status', authenticate, async (req, res) => {
   }
 });
 
+// Retry failed note syncs
 app.post('/api/notes/retry-sync', authenticate, async (req, res) => {
   if (!prisma) {
     return res.status(503).json({ success: false, error: { message: 'Database not available' } });
@@ -579,6 +602,8 @@ app.post('/api/notes/retry-sync', authenticate, async (req, res) => {
   }
 });
 
+// ==================== ERROR HANDLING ====================
+
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({ success: false, error: { message: `Route ${req.method} ${req.path} not found` } });
@@ -590,4 +615,5 @@ app.use((err, req, res, next) => {
   res.status(err.statusCode || 500).json({ success: false, error: { message: err.message || 'Internal server error' } });
 });
 
+// Export for Vercel
 module.exports = app;

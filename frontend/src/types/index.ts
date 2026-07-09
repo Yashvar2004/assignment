@@ -1,5 +1,3 @@
-// Types for the HubSpot Sync application
-
 export interface User {
   id: string;
   hubspotPortalId: string;

@@ -28,15 +28,6 @@ const SyncStatus: React.FC = () => {
     }
   };
 
-  const handleResume = async (jobId: string) => {
-    try {
-      await contactsApi.resumeSyncJob(jobId);
-      fetchStatus();
-    } catch (error) {
-      console.error('Failed to resume job:', error);
-    }
-  };
-
   const handleRetryNotes = async () => {
     try {
       await notesApi.retryFailedSyncs();
@@ -219,19 +210,11 @@ const SyncStatus: React.FC = () => {
                   </div>
                 )}
 
-                {/* Timestamps and actions */}
+                {/* Timestamps */}
                 <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100">
                   <span className="text-xs text-gray-500">
                     Started: {new Date(job.createdAt).toLocaleString()}
                   </span>
-                  {job.status === 'failed' && (
-                    <button
-                      onClick={() => handleResume(job.id)}
-                      className="text-sm text-orange-600 hover:text-orange-700 font-medium"
-                    >
-                      Resume
-                    </button>
-                  )}
                 </div>
               </div>
             ))}
