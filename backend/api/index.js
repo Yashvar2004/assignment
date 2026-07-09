@@ -157,8 +157,11 @@ app.get('/api/auth/hubspot/callback', async (req, res) => {
 
     const token = generateToken(user.id);
 
-    // Auto-sync contacts after OAuth
-    syncContactsInBackground(user.id, access_token);
+    // Create sync job and auto-sync contacts after OAuth
+    const syncJob = await prisma.syncJob.create({
+      data: { userId: user.id, type: 'contact_sync', status: 'running', startedAt: new Date() },
+    });
+    syncContactsInBackground(user.id, access_token, syncJob.id);
 
     // Redirect to frontend with token
     res.redirect(`${process.env.FRONTEND_URL}/auth/callback?token=${token}&portalName=${encodeURIComponent(portalName)}`);
@@ -210,8 +213,11 @@ app.post('/api/auth/connect-pat', async (req, res) => {
 
     const token = generateToken(user.id);
 
-    // Auto-sync contacts
-    syncContactsInBackground(user.id, patToken);
+    // Create sync job and auto-sync contacts
+    const syncJob = await prisma.syncJob.create({
+      data: { userId: user.id, type: 'contact_sync', status: 'running', startedAt: new Date() },
+    });
+    syncContactsInBackground(user.id, patToken, syncJob.id);
 
     res.json({
       success: true,
@@ -254,27 +260,24 @@ app.post('/api/auth/disconnect', authenticate, async (req, res) => {
 
 // ==================== CONTACT ROUTES ====================
 
-// Background contact sync
-async function syncContactsInBackground(userId, accessToken) {
+// Background contact sync - takes an existing sync job ID
+async function syncContactsInBackground(userId, accessToken, syncJobId) {
   if (!prisma) return;
   try {
-    // First, get the total count from HubSpot
+    // Get total count from HubSpot
     const countResponse = await axios.get('https://api.hubapi.com/crm/v3/objects/contacts', {
       params: { limit: 1, properties: 'email' },
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     const totalContacts = countResponse.data.total || 0;
 
-    const syncJob = await prisma.syncJob.create({
-      data: {
-        userId,
-        type: 'contact_sync',
-        status: 'running',
-        totalItems: totalContacts,
-        startedAt: new Date()
-      },
+    // Update job with total count
+    await prisma.syncJob.update({
+      where: { id: syncJobId },
+      data: { totalItems: totalContacts },
     });
 
+    // Fetch contacts from HubSpot
     const response = await axios.get('https://api.hubapi.com/crm/v3/objects/contacts', {
       params: {
         limit: 100,
@@ -325,7 +328,7 @@ async function syncContactsInBackground(userId, accessToken) {
 
         // Update progress in real-time
         await prisma.syncJob.update({
-          where: { id: syncJob.id },
+          where: { id: syncJobId },
           data: { processed, failed },
         });
       } catch (err) {
@@ -333,8 +336,9 @@ async function syncContactsInBackground(userId, accessToken) {
       }
     }
 
+    // Mark job as completed
     await prisma.syncJob.update({
-      where: { id: syncJob.id },
+      where: { id: syncJobId },
       data: {
         status: failed > 0 ? 'completed_with_errors' : 'completed',
         processed,
@@ -346,6 +350,15 @@ async function syncContactsInBackground(userId, accessToken) {
     console.log(`Contact sync completed: ${processed} processed, ${failed} failed`);
   } catch (error) {
     console.error('Contact sync failed:', error.message);
+    // Mark job as failed
+    await prisma.syncJob.update({
+      where: { id: syncJobId },
+      data: {
+        status: 'failed',
+        error: error.message,
+        completedAt: new Date(),
+      },
+    }).catch(() => {});
   }
 }
 
@@ -358,11 +371,13 @@ app.post('/api/contacts/sync', authenticate, async (req, res) => {
     const user = await prisma.user.findUnique({ where: { id: req.userId } });
     if (!user) return res.status(404).json({ success: false, error: { message: 'User not found' } });
 
+    // Create sync job first
     const syncJob = await prisma.syncJob.create({
       data: { userId: user.id, type: 'contact_sync', status: 'running', startedAt: new Date() },
     });
 
-    syncContactsInBackground(user.id, user.accessToken);
+    // Pass the job ID to the background function
+    syncContactsInBackground(user.id, user.accessToken, syncJob.id);
 
     res.json({ success: true, data: { message: 'Contact sync started', jobId: syncJob.id } });
   } catch (error) {
