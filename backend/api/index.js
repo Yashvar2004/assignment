@@ -2,8 +2,21 @@ const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
+const rateLimit = require('express-rate-limit');
 
-// Initialize Prisma with error handling
+// ==================== VALIDATION ====================
+// Fail fast if required env vars are missing
+const REQUIRED_ENV_VARS = ['JWT_SECRET', 'DATABASE_URL'];
+for (const envVar of REQUIRED_ENV_VARS) {
+  if (!process.env[envVar]) {
+    console.error(`FATAL: Missing required environment variable: ${envVar}`);
+    process.exit(1);
+  }
+}
+
+// ==================== INITIALIZATION ====================
+const JWT_SECRET = process.env.JWT_SECRET; // No fallback - must be set via env var
+
 let prisma = null;
 try {
   const { PrismaClient } = require('@prisma/client');
@@ -15,11 +28,31 @@ try {
 
 const app = express();
 
-// CORS configuration
+// ==================== RATE LIMITING ====================
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: { success: false, error: { message: 'Too many requests, please try again later' } },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const syncLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 5, // limit each IP to 5 sync requests per minute
+  message: { success: false, error: { message: 'Sync rate limit exceeded, please wait' } },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Apply rate limiting
+app.use(generalLimiter);
+
+// ==================== MIDDLEWARE ====================
 app.use(cors({
   origin: [
     'http://localhost:5173',
-    'https://frontend-nine-bay-26.vercel.app',
+    'https://hubspot-sync-frontend.vercel.app',
     /\.vercel\.app$/,
   ],
   credentials: true,
@@ -30,9 +63,7 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// JWT configuration
-const JWT_SECRET = process.env.JWT_SECRET || 'hubspot-sync-jwt-secret-2026';
-
+// ==================== JWT FUNCTIONS ====================
 function generateToken(userId) {
   return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '7d' });
 }
@@ -56,8 +87,114 @@ function authenticate(req, res, next) {
   }
 }
 
-// ==================== HEALTH CHECK ====================
+// ==================== RATE LIMITER FOR HUBSPOT API ====================
+// HubSpot allows 100 requests per 10 seconds
+const hubspotRateLimiter = {
+  requests: 0,
+  windowStart: Date.now(),
+  maxRequests: 100,
+  windowMs: 10000, // 10 seconds
 
+  async waitIfNeeded() {
+    const now = Date.now();
+    if (now - this.windowStart > this.windowMs) {
+      this.requests = 0;
+      this.windowStart = now;
+    }
+    if (this.requests >= this.maxRequests) {
+      const waitTime = this.windowMs - (now - this.windowStart) + 100;
+      console.log(`Rate limit reached, waiting ${waitTime}ms`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      this.requests = 0;
+      this.windowStart = Date.now();
+    }
+    this.requests++;
+  }
+};
+
+// ==================== TOKEN REFRESH ====================
+async function refreshHubspotToken(userId) {
+  if (!prisma) throw new Error('Database not available');
+
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw new Error('User not found');
+
+  // Check if token needs refresh (5 minutes before expiry)
+  const now = new Date();
+  const bufferTime = 5 * 60 * 1000; // 5 minutes
+  const tokenExpiry = new Date(user.tokenExpiresAt);
+
+  if (tokenExpiry.getTime() - bufferTime > now.getTime()) {
+    // Token still valid, no refresh needed
+    return user.accessToken;
+  }
+
+  // Skip refresh for PAT tokens
+  if (user.refreshToken === 'pat-refresh') {
+    return user.accessToken;
+  }
+
+  console.log(`Refreshing token for user ${userId}`);
+
+  try {
+    const response = await axios.post('https://api.hubapi.com/oauth/v1/token',
+      new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: process.env.HUBSPOT_CLIENT_ID,
+        client_secret: process.env.HUBSPOT_CLIENT_SECRET,
+        refresh_token: user.refreshToken,
+      }).toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+
+    const { access_token, refresh_token, expires_in } = response.data;
+    const newExpiry = new Date(Date.now() + expires_in * 1000);
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        accessToken: access_token,
+        refreshToken: refresh_token,
+        tokenExpiresAt: newExpiry,
+      },
+    });
+
+    console.log(`Token refreshed successfully for user ${userId}`);
+    return access_token;
+  } catch (error) {
+    console.error(`Token refresh failed for user ${userId}:`, error.message);
+    throw new Error('Token refresh failed. Please reconnect your HubSpot account.');
+  }
+}
+
+// ==================== RETRY UTILITY ====================
+async function withRetry(fn, options = {}) {
+  const { maxAttempts = 5, backoffBase = 1000, maxBackoff = 60000, onRetry } = options;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (attempt === maxAttempts) throw error;
+
+      // Check if error is retryable (429 rate limit or 5xx server error)
+      const isRetryable = error.response?.status === 429 ||
+                         (error.response?.status >= 500 && error.response?.status < 600);
+
+      if (!isRetryable) throw error;
+
+      const backoff = Math.min(backoffBase * Math.pow(2, attempt - 1), maxBackoff);
+      const jitter = backoff * (0.5 + Math.random() * 0.5);
+
+      if (onRetry) onRetry(attempt, error);
+
+      console.log(`Retry attempt ${attempt}/${maxAttempts} after ${Math.round(jitter)}ms`);
+      await new Promise(resolve => setTimeout(resolve, jitter));
+    }
+  }
+}
+
+// ==================== HEALTH CHECK ====================
 app.get('/health', async (req, res) => {
   try {
     if (prisma) {
@@ -112,24 +249,30 @@ app.get('/api/auth/hubspot/callback', async (req, res) => {
       return res.redirect(`${process.env.FRONTEND_URL}/auth/callback?error=No authorization code`);
     }
 
-    // Exchange code for tokens
-    const tokenResponse = await axios.post('https://api.hubapi.com/oauth/v1/token',
-      new URLSearchParams({
-        grant_type: 'authorization_code',
-        client_id: process.env.HUBSPOT_CLIENT_ID,
-        client_secret: process.env.HUBSPOT_CLIENT_SECRET,
-        redirect_uri: process.env.HUBSPOT_REDIRECT_URI || `${process.env.FRONTEND_URL}/auth/callback`,
-        code,
-      }).toString(),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    // Exchange code for tokens with retry
+    const tokenResponse = await withRetry(
+      () => axios.post('https://api.hubapi.com/oauth/v1/token',
+        new URLSearchParams({
+          grant_type: 'authorization_code',
+          client_id: process.env.HUBSPOT_CLIENT_ID,
+          client_secret: process.env.HUBSPOT_CLIENT_SECRET,
+          redirect_uri: process.env.HUBSPOT_REDIRECT_URI || `${process.env.FRONTEND_URL}/auth/callback`,
+          code,
+        }).toString(),
+        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+      ),
+      { maxAttempts: 3, onRetry: (attempt) => console.log(`Token exchange retry ${attempt}`) }
     );
 
     const { access_token, refresh_token, expires_in } = tokenResponse.data;
 
-    // Get portal info
-    const portalResponse = await axios.get('https://api.hubapi.com/account-info/v3/details', {
-      headers: { Authorization: `Bearer ${access_token}` },
-    });
+    // Get portal info with retry
+    const portalResponse = await withRetry(
+      () => axios.get('https://api.hubapi.com/account-info/v3/details', {
+        headers: { Authorization: `Bearer ${access_token}` },
+      }),
+      { maxAttempts: 3 }
+    );
 
     const portalId = String(portalResponse.data.portalId);
     const portalName = portalResponse.data.accountName || `Portal ${portalId}`;
@@ -161,7 +304,7 @@ app.get('/api/auth/hubspot/callback', async (req, res) => {
     const syncJob = await prisma.syncJob.create({
       data: { userId: user.id, type: 'contact_sync', status: 'running', startedAt: new Date() },
     });
-    syncContactsInBackground(user.id, access_token, syncJob.id);
+    syncContactsInBackground(user.id, user.id, syncJob.id);
 
     // Redirect to frontend with token
     res.redirect(`${process.env.FRONTEND_URL}/auth/callback?token=${token}&portalName=${encodeURIComponent(portalName)}`);
@@ -183,10 +326,13 @@ app.post('/api/auth/connect-pat', async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'No PAT token configured' } });
     }
 
-    // Test the PAT token
-    const response = await axios.get('https://api.hubapi.com/account-info/v3/details', {
-      headers: { Authorization: `Bearer ${patToken}` },
-    });
+    // Test the PAT token with retry
+    const response = await withRetry(
+      () => axios.get('https://api.hubapi.com/account-info/v3/details', {
+        headers: { Authorization: `Bearer ${patToken}` },
+      }),
+      { maxAttempts: 3 }
+    );
 
     const portalId = String(response.data.portalId);
     const portalName = response.data.accountName || `Portal ${portalId}`;
@@ -217,7 +363,7 @@ app.post('/api/auth/connect-pat', async (req, res) => {
     const syncJob = await prisma.syncJob.create({
       data: { userId: user.id, type: 'contact_sync', status: 'running', startedAt: new Date() },
     });
-    syncContactsInBackground(user.id, patToken, syncJob.id);
+    syncContactsInBackground(user.id, user.id, syncJob.id);
 
     res.json({
       success: true,
@@ -236,9 +382,21 @@ app.get('/api/auth/status', authenticate, async (req, res) => {
   try {
     const user = await prisma.user.findUnique({ where: { id: req.userId } });
     if (!user) return res.json({ success: true, data: { connected: false } });
+
+    // Check if token is still valid
+    const now = new Date();
+    const tokenExpiry = new Date(user.tokenExpiresAt);
+    const isValid = tokenExpiry > now || user.refreshToken === 'pat-refresh';
+
     res.json({
       success: true,
-      data: { connected: true, portalName: user.portalName, portalId: user.hubspotPortalId },
+      data: {
+        connected: true,
+        portalName: user.portalName,
+        portalId: user.hubspotPortalId,
+        tokenValid: isValid,
+        tokenExpiresAt: user.tokenExpiresAt,
+      },
     });
   } catch (error) {
     res.json({ success: true, data: { connected: false } });
@@ -260,15 +418,23 @@ app.post('/api/auth/disconnect', authenticate, async (req, res) => {
 
 // ==================== CONTACT ROUTES ====================
 
-// Background contact sync - takes an existing sync job ID
-async function syncContactsInBackground(userId, accessToken, syncJobId) {
+// Background contact sync with cursor-based pagination and retry
+async function syncContactsInBackground(userId, requestingUserId, syncJobId) {
   if (!prisma) return;
+
   try {
-    // Get total count from HubSpot
-    const countResponse = await axios.get('https://api.hubapi.com/crm/v3/objects/contacts', {
-      params: { limit: 1, properties: 'email' },
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    // Get valid access token (refresh if needed)
+    const accessToken = await refreshHubspotToken(userId);
+
+    // Get total count from HubSpot with rate limiting
+    await hubspotRateLimiter.waitIfNeeded();
+    const countResponse = await withRetry(
+      () => axios.get('https://api.hubapi.com/crm/v3/objects/contacts', {
+        params: { limit: 1, properties: 'email' },
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }),
+      { maxAttempts: 5, onRetry: (attempt) => console.log(`Count fetch retry ${attempt}`) }
+    );
     const totalContacts = countResponse.data.total || 0;
 
     // Update job with total count
@@ -277,63 +443,94 @@ async function syncContactsInBackground(userId, accessToken, syncJobId) {
       data: { totalItems: totalContacts },
     });
 
-    // Fetch contacts from HubSpot
-    const response = await axios.get('https://api.hubapi.com/crm/v3/objects/contacts', {
-      params: {
-        limit: 100,
-        properties: 'email,firstname,lastname,phone,company,jobtitle,lifecyclestage,city,country',
-      },
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-
-    const contacts = response.data.results || [];
     let processed = 0, failed = 0;
+    let after = undefined; // cursor for pagination
+    let hasMore = true;
 
-    for (const contact of contacts) {
-      try {
-        await prisma.contact.upsert({
-          where: { hubspotId: contact.id },
-          update: {
-            email: contact.properties.email || null,
-            firstName: contact.properties.firstname || null,
-            lastName: contact.properties.lastname || null,
-            phone: contact.properties.phone || null,
-            company: contact.properties.company || null,
-            jobTitle: contact.properties.jobtitle || null,
-            lifecycleStage: contact.properties.lifecyclestage || null,
-            city: contact.properties.city || null,
-            country: contact.properties.country || null,
-            hsCreatedAt: contact.createdAt ? new Date(contact.createdAt) : null,
-            hsUpdatedAt: contact.updatedAt ? new Date(contact.updatedAt) : null,
-            lastSyncedAt: new Date(),
-          },
-          create: {
-            hubspotId: contact.id,
-            userId,
-            email: contact.properties.email || null,
-            firstName: contact.properties.firstname || null,
-            lastName: contact.properties.lastname || null,
-            phone: contact.properties.phone || null,
-            company: contact.properties.company || null,
-            jobTitle: contact.properties.jobtitle || null,
-            lifecycleStage: contact.properties.lifecyclestage || null,
-            city: contact.properties.city || null,
-            country: contact.properties.country || null,
-            hsCreatedAt: contact.createdAt ? new Date(contact.createdAt) : null,
-            hsUpdatedAt: contact.updatedAt ? new Date(contact.updatedAt) : null,
-            lastSyncedAt: new Date(),
-          },
-        });
-        processed++;
+    // Cursor-based pagination loop
+    while (hasMore) {
+      // Rate limit before each request
+      await hubspotRateLimiter.waitIfNeeded();
 
-        // Update progress in real-time
-        await prisma.syncJob.update({
-          where: { id: syncJobId },
-          data: { processed, failed },
-        });
-      } catch (err) {
-        failed++;
+      // Fetch contacts batch with retry
+      const response = await withRetry(
+        () => axios.get('https://api.hubapi.com/crm/v3/objects/contacts', {
+          params: {
+            limit: 100,
+            after: after,
+            properties: 'email,firstname,lastname,phone,company,jobtitle,lifecyclestage,city,country',
+          },
+          headers: { Authorization: `Bearer ${accessToken}` },
+        }),
+        {
+          maxAttempts: 5,
+          onRetry: (attempt) => console.log(`Contact fetch retry ${attempt}, cursor: ${after}`),
+        }
+      );
+
+      const contacts = response.data.results || [];
+
+      // Process contacts in batch (upsert for idempotency)
+      for (const contact of contacts) {
+        try {
+          await prisma.contact.upsert({
+            where: { hubspotId: contact.id },
+            update: {
+              email: contact.properties.email || null,
+              firstName: contact.properties.firstname || null,
+              lastName: contact.properties.lastname || null,
+              phone: contact.properties.phone || null,
+              company: contact.properties.company || null,
+              jobTitle: contact.properties.jobtitle || null,
+              lifecycleStage: contact.properties.lifecyclestage || null,
+              city: contact.properties.city || null,
+              country: contact.properties.country || null,
+              hsCreatedAt: contact.createdAt ? new Date(contact.createdAt) : null,
+              hsUpdatedAt: contact.updatedAt ? new Date(contact.updatedAt) : null,
+              lastSyncedAt: new Date(),
+            },
+            create: {
+              hubspotId: contact.id,
+              userId,
+              email: contact.properties.email || null,
+              firstName: contact.properties.firstname || null,
+              lastName: contact.properties.lastname || null,
+              phone: contact.properties.phone || null,
+              company: contact.properties.company || null,
+              jobTitle: contact.properties.jobtitle || null,
+              lifecycleStage: contact.properties.lifecyclestage || null,
+              city: contact.properties.city || null,
+              country: contact.properties.country || null,
+              hsCreatedAt: contact.createdAt ? new Date(contact.createdAt) : null,
+              hsUpdatedAt: contact.updatedAt ? new Date(contact.updatedAt) : null,
+              lastSyncedAt: new Date(),
+            },
+          });
+          processed++;
+        } catch (err) {
+          failed++;
+          console.error(`Failed to sync contact ${contact.id}:`, err.message);
+        }
       }
+
+      // Update progress in real-time
+      await prisma.syncJob.update({
+        where: { id: syncJobId },
+        data: {
+          processed,
+          failed,
+          cursor: response.data.paging?.next?.after || null,
+        },
+      });
+
+      // Check if there are more pages
+      if (response.data.paging?.next?.after) {
+        after = response.data.paging.next.after;
+      } else {
+        hasMore = false;
+      }
+
+      console.log(`Sync progress: ${processed}/${totalContacts} processed, ${failed} failed`);
     }
 
     // Mark job as completed
@@ -362,8 +559,8 @@ async function syncContactsInBackground(userId, accessToken, syncJobId) {
   }
 }
 
-// Trigger contact sync
-app.post('/api/contacts/sync', authenticate, async (req, res) => {
+// Trigger contact sync (with rate limiting)
+app.post('/api/contacts/sync', authenticate, syncLimiter, async (req, res) => {
   if (!prisma) {
     return res.status(503).json({ success: false, error: { message: 'Database not available' } });
   }
@@ -377,7 +574,7 @@ app.post('/api/contacts/sync', authenticate, async (req, res) => {
     });
 
     // Pass the job ID to the background function
-    syncContactsInBackground(user.id, user.accessToken, syncJob.id);
+    syncContactsInBackground(user.id, user.id, syncJob.id);
 
     res.json({ success: true, data: { message: 'Contact sync started', jobId: syncJob.id } });
   } catch (error) {
@@ -495,10 +692,10 @@ app.post('/api/contacts/:contactId/notes', authenticate, async (req, res) => {
 
     const note = await prisma.note.create({ data: { contactId: contact.id, body } });
 
-    // Sync to HubSpot in background
+    // Sync to HubSpot in background with automatic retry
     const user = await prisma.user.findUnique({ where: { id: req.userId } });
     if (user) {
-      syncNoteToHubspot(note.id, contact.hubspotId, body, user.accessToken);
+      syncNoteToHubspotWithRetry(note.id, contact.hubspotId, body, user.id);
     }
 
     res.json({ success: true, data: note });
@@ -507,37 +704,73 @@ app.post('/api/contacts/:contactId/notes', authenticate, async (req, res) => {
   }
 });
 
-// Background note sync
-async function syncNoteToHubspot(noteId, contactHubspotId, body, accessToken) {
+// Background note sync with automatic retry
+async function syncNoteToHubspotWithRetry(noteId, contactHubspotId, body, userId) {
   if (!prisma) return;
-  try {
-    const response = await axios.post(
-      'https://api.hubapi.com/engagements/v1/engagements',
-      {
-        engagement: { type: 'NOTE', timestamp: Date.now() },
-        associations: { contactIds: [parseInt(contactHubspotId, 10)] },
-        metadata: { body },
-      },
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
 
-    await prisma.note.update({
-      where: { id: noteId },
-      data: { hubspotEngagementId: String(response.data.engagement.id), syncedToHubspot: true },
-    });
+  const MAX_RETRIES = 5;
+  let attempts = 0;
 
-    console.log(`Note ${noteId} synced to HubSpot`);
-  } catch (error) {
-    console.error(`Failed to sync note ${noteId}:`, error.message);
-    await prisma.note.update({
-      where: { id: noteId },
-      data: {
-        syncAttempts: { increment: 1 },
-        lastSyncError: error.message,
-        lastSyncAttempt: new Date(),
-      },
-    });
+  while (attempts < MAX_RETRIES) {
+    try {
+      // Get fresh token (refresh if needed)
+      const accessToken = await refreshHubspotToken(userId);
+
+      // Rate limit
+      await hubspotRateLimiter.waitIfNeeded();
+
+      // Create engagement with retry
+      const response = await withRetry(
+        () => axios.post(
+          'https://api.hubapi.com/engagements/v1/engagements',
+          {
+            engagement: { type: 'NOTE', timestamp: Date.now() },
+            associations: { contactIds: [parseInt(contactHubspotId, 10)] },
+            metadata: { body },
+          },
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        ),
+        { maxAttempts: 3 }
+      );
+
+      // Success - update note
+      await prisma.note.update({
+        where: { id: noteId },
+        data: {
+          hubspotEngagementId: String(response.data.engagement.id),
+          syncedToHubspot: true,
+          syncAttempts: attempts + 1,
+          lastSyncAttempt: new Date(),
+          lastSyncError: null,
+        },
+      });
+
+      console.log(`Note ${noteId} synced to HubSpot (attempt ${attempts + 1})`);
+      return; // Success, exit
+    } catch (error) {
+      attempts++;
+      console.error(`Note sync attempt ${attempts}/${MAX_RETRIES} failed for ${noteId}:`, error.message);
+
+      // Update attempt count and error
+      await prisma.note.update({
+        where: { id: noteId },
+        data: {
+          syncAttempts: attempts,
+          lastSyncError: error.message,
+          lastSyncAttempt: new Date(),
+        },
+      });
+
+      if (attempts < MAX_RETRIES) {
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+        const backoff = Math.min(1000 * Math.pow(2, attempts - 1), 16000);
+        console.log(`Retrying note sync in ${backoff}ms...`);
+        await new Promise(resolve => setTimeout(resolve, backoff));
+      }
+    }
   }
+
+  console.error(`Note ${noteId} sync failed after ${MAX_RETRIES} attempts`);
 }
 
 // Get notes for contact
@@ -615,14 +848,11 @@ app.post('/api/notes/retry-sync', authenticate, async (req, res) => {
       include: { contact: true },
     });
 
-    const user = await prisma.user.findUnique({ where: { id: req.userId } });
-    if (!user) return res.status(404).json({ success: false, error: { message: 'User not found' } });
-
     let retried = 0, successful = 0, failed = 0;
     for (const note of failedNotes) {
       retried++;
       try {
-        await syncNoteToHubspot(note.id, note.contact.hubspotId, note.body, user.accessToken);
+        await syncNoteToHubspotWithRetry(note.id, note.contact.hubspotId, note.body, req.userId);
         successful++;
       } catch (err) {
         failed++;
