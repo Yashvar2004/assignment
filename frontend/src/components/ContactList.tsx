@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { contactsApi } from '../services/api';
-import type { Contact, SyncJob } from '../types';
+import type { Contact } from '../types';
 
 const ContactList: React.FC = () => {
   const navigate = useNavigate();
@@ -11,8 +11,6 @@ const ContactList: React.FC = () => {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
-  const [syncJob, setSyncJob] = useState<SyncJob | null>(null);
-  const [isSyncing, setIsSyncing] = useState(false);
 
   const fetchContacts = useCallback(async () => {
     try {
@@ -39,48 +37,14 @@ const ContactList: React.FC = () => {
     fetchContacts();
   }, [fetchContacts]);
 
+  // Auto-refresh contacts every 10 seconds to pick up background sync
   useEffect(() => {
-    if (!syncJob || syncJob.status === 'completed' || syncJob.status === 'failed' || syncJob.status === 'completed_with_errors') {
-      if (syncJob && (syncJob.status === 'completed' || syncJob.status === 'completed_with_errors')) {
-        setIsSyncing(false);
-        fetchContacts();
-      }
-      return;
-    }
-
-    const interval = setInterval(async () => {
-      try {
-        const job = await contactsApi.getSyncJobStatus(syncJob.id);
-        setSyncJob(job);
-
-        if (job.status === 'completed' || job.status === 'failed' || job.status === 'completed_with_errors') {
-          setIsSyncing(false);
-          fetchContacts();
-        }
-      } catch (error) {
-        console.error('Failed to poll sync status:', error);
-      }
-    }, 1000);
+    const interval = setInterval(() => {
+      fetchContacts();
+    }, 10000);
 
     return () => clearInterval(interval);
-  }, [syncJob, fetchContacts]);
-
-  const handleSync = async () => {
-    try {
-      setIsSyncing(true);
-      const result = await contactsApi.syncContacts();
-      const job = await contactsApi.getSyncJobStatus(result.jobId);
-      setSyncJob(job);
-
-      // Also refresh contacts after a short delay
-      setTimeout(() => {
-        fetchContacts();
-      }, 3000);
-    } catch (error) {
-      console.error('Failed to start sync:', error);
-      setIsSyncing(false);
-    }
-  };
+  }, [fetchContacts]);
 
   const getFullName = (contact: Contact) => {
     const parts = [contact.firstName, contact.lastName].filter(Boolean);
@@ -102,66 +66,7 @@ const ContactList: React.FC = () => {
             {total} contact{total !== 1 ? 's' : ''} synced from HubSpot
           </p>
         </div>
-
-        <div className="flex space-x-3">
-          <button
-            onClick={() => fetchContacts()}
-            disabled={isLoading}
-            className="px-4 py-2 text-sm font-medium border border-gray-300 rounded-lg hover:bg-gray-50 transition-all inline-flex items-center"
-          >
-            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            Refresh
-          </button>
-          <button
-            onClick={handleSync}
-            disabled={isSyncing}
-            className="btn-primary inline-flex items-center"
-          >
-            {isSyncing ? (
-              <>
-                <div className="spinner w-4 h-4 mr-2 border-2 border-white border-t-transparent"></div>
-                Syncing...
-              </>
-            ) : (
-              <>
-                <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                Sync Contacts
-              </>
-            )}
-          </button>
-        </div>
       </div>
-
-      {/* Sync Progress */}
-      {syncJob && isSyncing && (
-        <div className="card p-6 mb-6 border-l-4 border-blue-500">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center space-x-3">
-              <div className="spinner w-5 h-5 border-2 border-blue-500 border-t-transparent"></div>
-              <span className="font-medium text-gray-900">
-                Syncing contacts from HubSpot...
-              </span>
-            </div>
-            <span className="text-sm text-gray-600">
-              {syncJob.processed} / {syncJob.totalItems || '?'}
-            </span>
-          </div>
-          <div className="w-full bg-gray-200 rounded-full h-2">
-            <div
-              className="bg-gradient-to-r from-blue-500 to-blue-600 h-2 rounded-full transition-all duration-500"
-              style={{
-                width: syncJob.totalItems
-                  ? `${Math.round((syncJob.processed / syncJob.totalItems) * 100)}%`
-                  : '0%',
-              }}
-            />
-          </div>
-        </div>
-      )}
 
       {/* Search */}
       <div className="card p-4 mb-6">
@@ -197,15 +102,10 @@ const ContactList: React.FC = () => {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
             </svg>
           </div>
-          <h3 className="text-xl font-semibold text-gray-900 mb-2">No contacts found</h3>
-          <p className="text-gray-600 mb-6">
-            {search ? 'No contacts match your search criteria' : 'Click "Sync Contacts" to fetch contacts from HubSpot'}
+          <h3 className="text-xl font-semibold text-gray-900 mb-2">Syncing contacts...</h3>
+          <p className="text-gray-600">
+            Your contacts are being synced from HubSpot. This page will refresh automatically.
           </p>
-          {!search && (
-            <button onClick={handleSync} className="btn-primary">
-              Sync Contacts Now
-            </button>
-          )}
         </div>
       ) : (
         <>
