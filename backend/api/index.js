@@ -433,7 +433,7 @@ async function syncContactsInBackground(userId, requestingUserId, syncJobId) {
         params: { limit: 1, properties: 'email' },
         headers: { Authorization: `Bearer ${accessToken}` },
       }),
-      { maxAttempts: 5, onRetry: (attempt) => console.log(`Count fetch retry ${attempt}`) }
+      { maxAttempts: 3, onRetry: (attempt) => console.log(`Count fetch retry ${attempt}`) }
     );
     const totalContacts = countResponse.data.total || 0;
 
@@ -463,15 +463,15 @@ async function syncContactsInBackground(userId, requestingUserId, syncJobId) {
           headers: { Authorization: `Bearer ${accessToken}` },
         }),
         {
-          maxAttempts: 5,
+          maxAttempts: 3,
           onRetry: (attempt) => console.log(`Contact fetch retry ${attempt}, cursor: ${after}`),
         }
       );
 
       const contacts = response.data.results || [];
 
-      // Process contacts in batch (upsert for idempotency)
-      for (const contact of contacts) {
+      // Batch process contacts using Promise.all for parallel upserts
+      const upsertPromises = contacts.map(async (contact) => {
         try {
           await prisma.contact.upsert({
             where: { hubspotId: contact.id },
@@ -506,12 +506,17 @@ async function syncContactsInBackground(userId, requestingUserId, syncJobId) {
               lastSyncedAt: new Date(),
             },
           });
-          processed++;
+          return { success: true };
         } catch (err) {
-          failed++;
           console.error(`Failed to sync contact ${contact.id}:`, err.message);
+          return { success: false };
         }
-      }
+      });
+
+      // Wait for all upserts to complete in parallel
+      const results = await Promise.all(upsertPromises);
+      processed += results.filter(r => r.success).length;
+      failed += results.filter(r => !r.success).length;
 
       // Update progress in real-time
       await prisma.syncJob.update({
