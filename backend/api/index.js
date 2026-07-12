@@ -194,6 +194,133 @@ async function withRetry(fn, options = {}) {
   }
 }
 
+// ==================== USER AUTHENTICATION ====================
+
+// Password hashing using crypto (no bcrypt dependency needed)
+const crypto = require('crypto');
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password, stored) {
+  const [salt, hash] = stored.split(':');
+  const verifyHash = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
+  return hash === verifyHash;
+}
+
+// Register new user
+app.post('/api/auth/register', async (req, res) => {
+  if (!prisma) {
+    return res.status(503).json({ success: false, error: { message: 'Database not available' } });
+  }
+
+  try {
+    const { email, password, name } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: { message: 'Email and password are required' } });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ success: false, error: { message: 'Password must be at least 6 characters' } });
+    }
+
+    // Check if user exists
+    const existingUser = await prisma.user.findUnique({ where: { email } });
+    if (existingUser) {
+      return res.status(409).json({ success: false, error: { message: 'Email already registered' } });
+    }
+
+    // Create user
+    const hashedPassword = hashPassword(password);
+    const user = await prisma.user.create({
+      data: {
+        email,
+        password: hashedPassword,
+        name: name || email.split('@')[0],
+      },
+    });
+
+    const token = generateToken(user.id);
+
+    res.status(201).json({
+      success: true,
+      data: {
+        token,
+        user: { id: user.id, email: user.email, name: user.name },
+        message: 'Account created successfully',
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: { message: error.message } });
+  }
+});
+
+// Login
+app.post('/api/auth/login', async (req, res) => {
+  if (!prisma) {
+    return res.status(503).json({ success: false, error: { message: 'Database not available' } });
+  }
+
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: { message: 'Email and password are required' } });
+    }
+
+    // Find user
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      return res.status(401).json({ success: false, error: { message: 'Invalid email or password' } });
+    }
+
+    // Verify password
+    if (!verifyPassword(password, user.password)) {
+      return res.status(401).json({ success: false, error: { message: 'Invalid email or password' } });
+    }
+
+    const token = generateToken(user.id);
+
+    res.json({
+      success: true,
+      data: {
+        token,
+        user: { id: user.id, email: user.email, name: user.name },
+        hubspotConnected: !!user.hubspotPortalId,
+        message: 'Login successful',
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: { message: error.message } });
+  }
+});
+
+// Get current user profile
+app.get('/api/auth/me', authenticate, async (req, res) => {
+  if (!prisma) {
+    return res.status(503).json({ success: false, error: { message: 'Database not available' } });
+  }
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: { id: true, email: true, name: true, hubspotPortalId: true, portalName: true, createdAt: true },
+    });
+
+    if (!user) {
+      return res.status(404).json({ success: false, error: { message: 'User not found' } });
+    }
+
+    res.json({ success: true, data: user });
+  } catch (error) {
+    res.status(500).json({ success: false, error: { message: error.message } });
+  }
+});
+
 // ==================== HEALTH CHECK ====================
 app.get('/health', async (req, res) => {
   try {
@@ -314,16 +441,17 @@ app.get('/api/auth/hubspot/callback', async (req, res) => {
   }
 });
 
-// Connect with PAT token (fallback)
-app.post('/api/auth/connect-pat', async (req, res) => {
+// Connect HubSpot with PAT token (requires authentication)
+app.post('/api/auth/connect-hubspot', authenticate, async (req, res) => {
   if (!prisma) {
     return res.status(503).json({ success: false, error: { message: 'Database not available' } });
   }
 
   try {
-    const patToken = process.env.HUBSPOT_PAT_TOKEN;
+    const { patToken } = req.body;
+
     if (!patToken) {
-      return res.status(400).json({ success: false, error: { message: 'No PAT token configured' } });
+      return res.status(400).json({ success: false, error: { message: 'PAT token is required' } });
     }
 
     // Test the PAT token with retry
@@ -337,17 +465,10 @@ app.post('/api/auth/connect-pat', async (req, res) => {
     const portalId = String(response.data.portalId);
     const portalName = response.data.accountName || `Portal ${portalId}`;
 
-    // Create or update user
-    const user = await prisma.user.upsert({
-      where: { hubspotPortalId: portalId },
-      update: {
-        accessToken: patToken,
-        refreshToken: 'pat-refresh',
-        tokenExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-        portalName,
-        updatedAt: new Date(),
-      },
-      create: {
+    // Update the logged-in user with HubSpot credentials
+    const user = await prisma.user.update({
+      where: { id: req.userId },
+      data: {
         hubspotPortalId: portalId,
         portalName,
         accessToken: patToken,
@@ -357,8 +478,6 @@ app.post('/api/auth/connect-pat', async (req, res) => {
       },
     });
 
-    const token = generateToken(user.id);
-
     // Create sync job and auto-sync contacts
     const syncJob = await prisma.syncJob.create({
       data: { userId: user.id, type: 'contact_sync', status: 'running', startedAt: new Date() },
@@ -367,7 +486,11 @@ app.post('/api/auth/connect-pat', async (req, res) => {
 
     res.json({
       success: true,
-      data: { token, portalName, portalId, message: 'Connected to HubSpot' },
+      data: {
+        portalName,
+        portalId,
+        message: 'HubSpot connected successfully',
+      },
     });
   } catch (error) {
     res.status(500).json({ success: false, error: { message: error.message } });

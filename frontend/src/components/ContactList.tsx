@@ -1,9 +1,24 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { contactsApi } from '../services/api';
-import type { Contact } from '../types';
 
-const ContactList: React.FC = () => {
+interface Contact {
+  id: string;
+  hubspotId: string;
+  email: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  phone: string | null;
+  company: string | null;
+  jobTitle: string | null;
+  lifecycleStage: string | null;
+  _count?: { notes: number };
+}
+
+interface ContactListProps {
+  token: string;
+}
+
+const ContactList: React.FC<ContactListProps> = ({ token }) => {
   const navigate = useNavigate();
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -15,34 +30,38 @@ const ContactList: React.FC = () => {
   const fetchContacts = useCallback(async () => {
     try {
       setIsLoading(true);
-      const result = await contactsApi.getContacts({
-        page,
-        limit: 20,
-        search: search || undefined,
-        sortBy: 'createdAt',
-        sortOrder: 'desc',
+      const params = new URLSearchParams({
+        page: page.toString(),
+        limit: '20',
+        ...(search && { search }),
       });
 
-      setContacts(result.data);
-      setTotalPages(result.totalPages);
-      setTotal(result.total);
+      const response = await fetch(
+        `https://hubspot-sync-backend.vercel.app/api/contacts?${params}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const data = await response.json();
+
+      if (data.success) {
+        setContacts(data.data.data);
+        setTotalPages(data.data.totalPages);
+        setTotal(data.data.total);
+      }
     } catch (error) {
       console.error('Failed to fetch contacts:', error);
     } finally {
       setIsLoading(false);
     }
-  }, [page, search]);
+  }, [page, search, token]);
 
   useEffect(() => {
     fetchContacts();
   }, [fetchContacts]);
 
-  // Auto-refresh contacts every 10 seconds to pick up background sync
+  // Auto-refresh every 10 seconds
   useEffect(() => {
-    const interval = setInterval(() => {
-      fetchContacts();
-    }, 10000);
-
+    const interval = setInterval(fetchContacts, 10000);
     return () => clearInterval(interval);
   }, [fetchContacts]);
 
@@ -59,13 +78,11 @@ const ContactList: React.FC = () => {
   return (
     <div className="animate-fade-in">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Contacts</h1>
-          <p className="text-gray-600 mt-1">
-            {total} contact{total !== 1 ? 's' : ''} synced from HubSpot
-          </p>
-        </div>
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold text-gray-900">Contacts</h1>
+        <p className="text-gray-600 mt-1">
+          {total} contact{total !== 1 ? 's' : ''} synced from HubSpot
+        </p>
       </div>
 
       {/* Search */}

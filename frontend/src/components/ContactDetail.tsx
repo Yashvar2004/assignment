@@ -1,10 +1,36 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { contactsApi, notesApi } from '../services/api';
-import type { Contact, Note } from '../types';
 import toast from 'react-hot-toast';
 
-const ContactDetail: React.FC = () => {
+interface Contact {
+  id: string;
+  hubspotId: string;
+  email: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  phone: string | null;
+  company: string | null;
+  jobTitle: string | null;
+  lifecycleStage: string | null;
+  city: string | null;
+  country: string | null;
+  hsCreatedAt: string | null;
+  notes: Note[];
+}
+
+interface Note {
+  id: string;
+  body: string;
+  syncedToHubspot: boolean;
+  syncAttempts: number;
+  createdAt: string;
+}
+
+interface ContactDetailProps {
+  token: string;
+}
+
+const ContactDetail: React.FC<ContactDetailProps> = ({ token }) => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [contact, setContact] = useState<Contact | null>(null);
@@ -19,18 +45,21 @@ const ContactDetail: React.FC = () => {
       fetchNotes(id);
 
       // Poll notes every 3 seconds to pick up sync status
-      const interval = setInterval(() => {
-        fetchNotes(id);
-      }, 3000);
-
+      const interval = setInterval(() => fetchNotes(id), 3000);
       return () => clearInterval(interval);
     }
-  }, [id]);
+  }, [id, token]);
 
   const fetchContact = async (contactId: string) => {
     try {
-      const data = await contactsApi.getContactById(contactId);
-      setContact(data);
+      const response = await fetch(
+        `https://hubspot-sync-backend.vercel.app/api/contacts/${contactId}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const data = await response.json();
+      if (data.success) {
+        setContact(data.data);
+      }
     } catch (error) {
       console.error('Failed to fetch contact:', error);
       toast.error('Failed to load contact');
@@ -41,8 +70,14 @@ const ContactDetail: React.FC = () => {
 
   const fetchNotes = async (contactId: string) => {
     try {
-      const result = await notesApi.getNotes(contactId, { limit: 50 });
-      setNotes(result.data);
+      const response = await fetch(
+        `https://hubspot-sync-backend.vercel.app/api/contacts/${contactId}/notes`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const data = await response.json();
+      if (data.success) {
+        setNotes(data.data.data);
+      }
     } catch (error) {
       console.error('Failed to fetch notes:', error);
     }
@@ -53,15 +88,24 @@ const ContactDetail: React.FC = () => {
 
     setIsAddingNote(true);
     try {
-      const note = await notesApi.createNote(id, newNote.trim());
-      setNotes((prev) => [note, ...prev]);
-      setNewNote('');
-      toast.success('Note added and syncing to HubSpot');
+      const response = await fetch(
+        `https://hubspot-sync-backend.vercel.app/api/contacts/${id}/notes`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ body: newNote }),
+        }
+      );
 
-      // Refresh notes after a short delay to get sync status
-      setTimeout(() => {
-        if (id) fetchNotes(id);
-      }, 2000);
+      const data = await response.json();
+      if (data.success) {
+        setNotes((prev) => [data.data, ...prev]);
+        setNewNote('');
+        toast.success('Note added and syncing to HubSpot');
+      }
     } catch (error) {
       console.error('Failed to add note:', error);
       toast.error('Failed to add note');
@@ -72,9 +116,18 @@ const ContactDetail: React.FC = () => {
 
   const handleDeleteNote = async (noteId: string) => {
     try {
-      await notesApi.deleteNote(noteId);
-      setNotes((prev) => prev.filter((n) => n.id !== noteId));
-      toast.success('Note deleted');
+      const response = await fetch(
+        `https://hubspot-sync-backend.vercel.app/api/notes/${noteId}`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (response.ok) {
+        setNotes((prev) => prev.filter((n) => n.id !== noteId));
+        toast.success('Note deleted');
+      }
     } catch (error) {
       console.error('Failed to delete note:', error);
       toast.error('Failed to delete note');
@@ -94,9 +147,9 @@ const ContactDetail: React.FC = () => {
 
   if (!contact) {
     return (
-      <div className="card p-12 text-center">
-        <h3 className="text-xl font-semibold text-gray-900 mb-2">Contact not found</h3>
-        <button onClick={() => navigate('/')} className="btn-primary mt-4">
+      <div className="text-center py-12">
+        <h3 className="text-lg font-medium text-gray-900">Contact not found</h3>
+        <button onClick={() => navigate('/')} className="mt-4 text-orange-600 hover:text-orange-700">
           Back to contacts
         </button>
       </div>
@@ -177,14 +230,6 @@ const ContactDetail: React.FC = () => {
             <div>
               <dt className="text-sm font-medium text-gray-500 mb-1">Country</dt>
               <dd className="text-gray-900 font-medium">{contact.country}</dd>
-            </div>
-          )}
-          {contact.hsCreatedAt && (
-            <div>
-              <dt className="text-sm font-medium text-gray-500 mb-1">Created in HubSpot</dt>
-              <dd className="text-gray-900 font-medium">
-                {new Date(contact.hsCreatedAt).toLocaleDateString()}
-              </dd>
             </div>
           )}
         </div>
