@@ -41,16 +41,6 @@ const Header: React.FC<HeaderProps> = ({ user, onLogout }) => {
             >
               Contacts
             </button>
-            <button
-              onClick={() => navigate('/dashboard')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                location.pathname === '/dashboard'
-                  ? 'bg-orange-50 text-orange-700'
-                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-              }`}
-            >
-              Dashboard
-            </button>
           </nav>
 
           {/* User menu */}

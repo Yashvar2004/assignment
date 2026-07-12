@@ -1,11 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import AuthForm from './components/AuthForm';
 import ConnectHubSpot from './components/ConnectHubSpot';
 import ContactList from './components/ContactList';
 import ContactDetail from './components/ContactDetail';
-import TokenDashboard from './components/TokenDashboard';
 import Header from './components/Header';
 import LoadingSpinner from './components/LoadingSpinner';
 import './App.css';
@@ -100,7 +99,6 @@ function App() {
           <Routes>
             <Route path="/" element={<ContactList token={token} />} />
             <Route path="/contacts/:id" element={<ContactDetail token={token} />} />
-            <Route path="/dashboard" element={<TokenDashboard />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
