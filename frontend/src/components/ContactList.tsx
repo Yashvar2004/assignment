@@ -22,6 +22,7 @@ const ContactList: React.FC<ContactListProps> = ({ token }) => {
   const navigate = useNavigate();
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -65,6 +66,25 @@ const ContactList: React.FC<ContactListProps> = ({ token }) => {
     return () => clearInterval(interval);
   }, [fetchContacts]);
 
+  // Trigger a new sync from HubSpot
+  const handleRefresh = async () => {
+    setIsSyncing(true);
+    try {
+      await fetch('https://hubspot-sync-backend.vercel.app/api/contacts/sync', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      // Wait a bit then refresh the list
+      setTimeout(() => {
+        fetchContacts();
+        setIsSyncing(false);
+      }, 5000);
+    } catch (error) {
+      console.error('Sync failed:', error);
+      setIsSyncing(false);
+    }
+  };
+
   const getFullName = (contact: Contact) => {
     const parts = [contact.firstName, contact.lastName].filter(Boolean);
     return parts.length > 0 ? parts.join(' ') : 'Unknown';
@@ -78,11 +98,32 @@ const ContactList: React.FC<ContactListProps> = ({ token }) => {
   return (
     <div className="animate-fade-in">
       {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">Contacts</h1>
-        <p className="text-gray-600 mt-1">
-          {total} contact{total !== 1 ? 's' : ''} synced from HubSpot
-        </p>
+      <div className="flex justify-between items-center mb-8">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">Contacts</h1>
+          <p className="text-gray-600 mt-1">
+            {total} contact{total !== 1 ? 's' : ''} synced from HubSpot
+          </p>
+        </div>
+        <button
+          onClick={handleRefresh}
+          disabled={isSyncing}
+          className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-all"
+        >
+          {isSyncing ? (
+            <>
+              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              Syncing...
+            </>
+          ) : (
+            <>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              Refresh
+            </>
+          )}
+        </button>
       </div>
 
       {/* Search */}
