@@ -597,7 +597,12 @@ async function syncContactsInBackground(userId, requestingUserId, syncJobId) {
       const upsertPromises = contacts.map(async (contact) => {
         try {
           await prisma.contact.upsert({
-            where: { hubspotId: contact.id },
+            where: {
+              userId_hubspotId: {
+                userId: userId,
+                hubspotId: contact.id,
+              },
+            },
             update: {
               email: contact.properties.email || null,
               firstName: contact.properties.firstname || null,
