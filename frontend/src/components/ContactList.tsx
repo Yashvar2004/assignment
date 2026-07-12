@@ -60,13 +60,35 @@ const ContactList: React.FC<ContactListProps> = ({ token }) => {
     fetchContacts();
   }, [fetchContacts]);
 
-  // Auto-refresh every 10 seconds
+  // Auto-sync from HubSpot every 30 seconds
   useEffect(() => {
-    const interval = setInterval(fetchContacts, 10000);
-    return () => clearInterval(interval);
-  }, [fetchContacts]);
+    const syncAndRefresh = async () => {
+      try {
+        // Trigger sync
+        await fetch('https://hubspot-sync-backend.vercel.app/api/contacts/sync', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        // Wait 5 seconds for sync to complete, then refresh
+        setTimeout(() => fetchContacts(), 5000);
+      } catch (error) {
+        // Silent fail for auto-sync
+      }
+    };
 
-  // Trigger a new sync from HubSpot
+    // Initial sync after 2 seconds
+    const initialTimer = setTimeout(syncAndRefresh, 2000);
+
+    // Then sync every 30 seconds
+    const interval = setInterval(syncAndRefresh, 30000);
+
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(interval);
+    };
+  }, [token, fetchContacts]);
+
+  // Manual refresh button
   const handleRefresh = async () => {
     setIsSyncing(true);
     try {
@@ -74,7 +96,6 @@ const ContactList: React.FC<ContactListProps> = ({ token }) => {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       });
-      // Wait a bit then refresh the list
       setTimeout(() => {
         fetchContacts();
         setIsSyncing(false);
