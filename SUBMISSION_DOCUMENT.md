@@ -1,34 +1,24 @@
-# HubSpot Sync - Contact Management Integration
+# HubSpot Sync - Technical Submission Document
 
-A full-stack application that integrates with HubSpot, automatically synchronizes contacts, and keeps notes synchronized between the application and HubSpot.
-
-## 🌐 Live Demo
-
-| Component | URL |
-|-----------|-----|
-| **Frontend** | https://hubspot-sync-frontend.vercel.app |
-| **Backend** | https://hubspot-sync-backend.vercel.app |
-| **GitHub** | https://github.com/Yashvar2004/assignment |
-
-## 📋 Table of Contents
-
-- [How to Use the Deployed App](#how-to-use-the-deployed-app)
-- [Project Overview](#project-overview)
-- [Architecture](#architecture)
-- [Technology Choices](#technology-choices)
-- [Features Implemented](#features-implemented)
-- [Setup Instructions](#setup-instructions)
-- [Environment Variables](#environment-variables)
-- [API Documentation](#api-documentation)
-- [Scalability Design](#scalability-design)
-- [Limitations](#limitations)
-- [Future Improvements](#future-improvements)
+**Developer**: Yash vardhan Vats  
+**Email**: yashvardhanvats06@gmail.com  
+**Date**: July 12, 2026
 
 ---
 
-## How to Use the Deployed App
+## 1. Project Links
 
-### Step 1: Get Your HubSpot PAT (Personal Access Token)
+| Item | URL |
+|------|-----|
+| **GitHub Repository** | https://github.com/Yashvar2004/assignment |
+| **Frontend (Vercel)** | https://hubspot-sync-frontend.vercel.app |
+| **Backend (Vercel)** | https://hubspot-sync-backend.vercel.app |
+
+---
+
+## 2. How to Use the Deployed Application
+
+### Step 1: Get Your HubSpot PAT Token
 
 1. Go to **https://app.hubspot.com**
 2. Click **Settings** (gear icon, top right corner)
@@ -66,9 +56,9 @@ A full-stack application that integrates with HubSpot, automatically synchronize
 
 ---
 
-## Project Overview
+## 3. Project Overview
 
-This application provides:
+This application provides a production-ready integration with HubSpot's CRM platform:
 
 - **User Authentication** — Register and login with email/password
 - **HubSpot Integration** — Connect your HubSpot account using a PAT token
@@ -77,7 +67,9 @@ This application provides:
 - **Auto-refresh** — Contacts sync every 30 seconds automatically
 - **Multi-user Support** — Each user has their own contacts and data
 
-## Architecture
+---
+
+## 4. Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -113,104 +105,115 @@ This application provides:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Technology Choices
+---
+
+## 5. Technology Stack
 
 ### Backend
-| Technology | Purpose |
-|------------|---------|
-| Node.js 22 | Runtime environment |
-| Express.js | Web framework |
-| Prisma | ORM for database |
-| PostgreSQL (Neon) | Database |
-| express-rate-limit | API rate limiting |
-| jsonwebtoken | JWT authentication |
-| axios | HTTP client with retry |
+| Technology | Version | Purpose |
+|------------|---------|---------|
+| Node.js | 22.x | Runtime environment |
+| Express.js | 4.21.x | Web framework |
+| Prisma | 6.9.x | ORM for database |
+| PostgreSQL | 15.x | Database (Neon) |
+| express-rate-limit | 7.5.x | API rate limiting |
+| jsonwebtoken | 9.0.x | JWT authentication |
+| axios | 1.7.x | HTTP client with retry |
 
 ### Frontend
-| Technology | Purpose |
-|------------|---------|
-| React 18 | UI framework |
-| TypeScript | Type safety |
-| Vite | Build tool |
-| Tailwind CSS | Styling |
-| React Router | Client-side routing |
+| Technology | Version | Purpose |
+|------------|---------|---------|
+| React | 18.x | UI framework |
+| TypeScript | 5.7.x | Type safety |
+| Vite | 6.x | Build tool |
+| Tailwind CSS | 4.x | Styling |
+| React Router | 6.x | Client-side routing |
+| Axios | 1.7.x | HTTP client |
 
-## Features Implemented
+---
 
-| Feature | Status |
-|---------|--------|
-| User registration/login | ✅ |
-| HubSpot connection via PAT token | ✅ |
-| Automatic contact sync | ✅ |
-| Contact list with search | ✅ |
-| Contact details view | ✅ |
-| Add notes to contacts | ✅ |
-| Notes sync to HubSpot | ✅ |
-| Auto-refresh every 30 seconds | ✅ |
-| Rate limiting | ✅ |
-| Retry with exponential backoff | ✅ |
-| Cursor-based pagination | ✅ |
-| Idempotent operations (upsert) | ✅ |
-| Token refresh | ✅ |
-| Error handling | ✅ |
-| Loading states | ✅ |
+## 6. Database Schema
 
-## Setup Instructions
-
-### Prerequisites
-- Node.js 18+
-- PostgreSQL database (Neon recommended)
-- HubSpot account with Private App
-
-### 1. Clone the Repository
-```bash
-git clone https://github.com/Yashvar2004/assignment.git
-cd assignment
+### User Table
+```sql
+CREATE TABLE User (
+  id              TEXT PRIMARY KEY,
+  email           TEXT UNIQUE,
+  password        TEXT,
+  name            TEXT,
+  hubspotPortalId TEXT,
+  portalName      TEXT,
+  accessToken     TEXT,
+  refreshToken    TEXT,
+  tokenExpiresAt  TIMESTAMP,
+  scopes          TEXT,
+  createdAt       TIMESTAMP DEFAULT NOW(),
+  updatedAt       TIMESTAMP
+);
 ```
 
-### 2. Backend Setup
-```bash
-cd backend
-npm install
+### Contact Table
+```sql
+CREATE TABLE Contact (
+  id              TEXT PRIMARY KEY,
+  hubspotId       TEXT,
+  userId          TEXT REFERENCES User(id),
+  email           TEXT,
+  firstName       TEXT,
+  lastName        TEXT,
+  phone           TEXT,
+  company         TEXT,
+  jobTitle        TEXT,
+  lifecycleStage  TEXT,
+  city            TEXT,
+  country         TEXT,
+  hsCreatedAt     TIMESTAMP,
+  hsUpdatedAt     TIMESTAMP,
+  lastSyncedAt    TIMESTAMP DEFAULT NOW(),
+  createdAt       TIMESTAMP DEFAULT NOW(),
+  updatedAt       TIMESTAMP,
+  UNIQUE(userId, hubspotId)
+);
 ```
 
-Create `.env` file:
-```env
-DATABASE_URL="postgresql://user:password@host:5432/dbname?sslmode=require"
-JWT_SECRET="your-secure-random-string"
-HUBSPOT_PAT_TOKEN="pat-na2-your-token"
-FRONTEND_URL="http://localhost:5173"
-NODE_ENV="development"
+### Note Table
+```sql
+CREATE TABLE Note (
+  id                   TEXT PRIMARY KEY,
+  hubspotEngagementId  TEXT UNIQUE,
+  contactId            TEXT REFERENCES Contact(id),
+  body                 TEXT,
+  syncedToHubspot      BOOLEAN DEFAULT FALSE,
+  syncAttempts         INT DEFAULT 0,
+  lastSyncError        TEXT,
+  lastSyncAttempt      TIMESTAMP,
+  createdAt            TIMESTAMP DEFAULT NOW(),
+  updatedAt            TIMESTAMP
+);
 ```
 
-```bash
-npx prisma generate
-npx prisma db push
-npm run dev
+### SyncJob Table
+```sql
+CREATE TABLE SyncJob (
+  id            TEXT PRIMARY KEY,
+  userId        TEXT REFERENCES User(id),
+  type          TEXT,
+  status        TEXT DEFAULT 'pending',
+  totalItems    INT,
+  processed     INT DEFAULT 0,
+  failed        INT DEFAULT 0,
+  cursor        TEXT,
+  startedAt     TIMESTAMP,
+  completedAt   TIMESTAMP,
+  error         TEXT,
+  createdAt     TIMESTAMP DEFAULT NOW(),
+  updatedAt     TIMESTAMP
+);
 ```
 
-### 3. Frontend Setup
-```bash
-cd frontend
-npm install
-npm run dev
-```
+---
 
-### 4. Open Application
-Navigate to `http://localhost:5173`
-
-## Environment Variables
-
-### Backend
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `JWT_SECRET` | Yes | Secret for JWT signing (min 32 characters) |
-| `HUBSPOT_PAT_TOKEN` | No | HubSpot Personal Access Token |
-| `FRONTEND_URL` | No | Frontend URL for CORS |
-| `NODE_ENV` | No | `development` or `production` |
-
-## API Documentation
+## 7. API Documentation
 
 ### Authentication
 | Method | Endpoint | Description |
@@ -220,13 +223,16 @@ Navigate to `http://localhost:5173`
 | GET | `/api/auth/me` | Get current user |
 | POST | `/api/auth/connect-hubspot` | Connect HubSpot with PAT token |
 | GET | `/api/auth/status` | Check connection status |
+| POST | `/api/auth/disconnect` | Disconnect HubSpot |
 
 ### Contacts
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/contacts` | List contacts (paginated, searchable) |
 | GET | `/api/contacts/:id` | Get contact details |
+| POST | `/api/contacts/sync` | Trigger contact sync |
 | GET | `/api/contacts/sync/jobs` | Get sync jobs |
+| GET | `/api/contacts/sync/jobs/:jobId` | Get sync job status |
 
 ### Notes
 | Method | Endpoint | Description |
@@ -235,31 +241,44 @@ Navigate to `http://localhost:5173`
 | GET | `/api/contacts/:contactId/notes` | Get notes |
 | DELETE | `/api/notes/:noteId` | Delete note |
 | GET | `/api/notes/sync-status` | Note sync status |
+| POST | `/api/notes/retry-sync` | Retry failed note syncs |
 
 ### Health
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/health` | Health check |
 
-## Scalability Design
+---
+
+## 8. Scalability Design
 
 | Feature | Implementation |
 |---------|---------------|
-| Rate Limiting | express-rate-limit (100 req/15min) + HubSpot token bucket (100 req/10s) |
-| Retry | Exponential backoff with jitter (5 attempts) |
-| Idempotent Operations | Upsert with compound unique constraint |
-| Cursor-based Pagination | Resumable syncs with cursor tracking |
-| Batch Processing | Promise.all for parallel upserts |
-| Token Refresh | Auto-refresh 5 minutes before expiry |
+| **Rate Limiting** | express-rate-limit (100 req/15min) + HubSpot token bucket (100 req/10s) |
+| **Retry** | Exponential backoff with jitter (5 attempts) |
+| **Idempotent Operations** | Upsert with compound unique constraint |
+| **Cursor-based Pagination** | Resumable syncs with cursor tracking |
+| **Batch Processing** | Promise.all for parallel upserts |
+| **Token Refresh** | Auto-refresh 5 minutes before expiry |
 
-## Limitations
+### Production Scaling Recommendations
+1. **BullMQ + Redis**: Extract background jobs to dedicated workers
+2. **Database Read Replicas**: Separate read and write databases
+3. **Caching Layer**: Redis cache for frequently accessed data
+4. **Multiple Worker Instances**: Deploy workers across servers
+
+---
+
+## 9. Limitations
 
 1. **PAT Token Authentication**: Uses PAT token instead of full OAuth flow (HubSpot disabled public app creation)
 2. **In-memory Rate Limiting**: Rate limits reset on serverless cold start
-3. **No Queue System**: Background jobs run in-process (documented as future improvement)
+3. **No Queue System**: Background jobs run in-process
 4. **Single HubSpot Account per User**: Each user connects one HubSpot account
 
-## Future Improvements
+---
+
+## 10. Future Improvements
 
 1. **BullMQ + Redis**: Extract background jobs to dedicated workers
 2. **Full OAuth Flow**: Implement when HubSpot re-enables public app creation
@@ -270,6 +289,12 @@ Navigate to `http://localhost:5173`
 
 ---
 
-## License
+## 11. Contact Information
 
-This project is created for technical assessment purposes.
+**Developer**: Yash vardhan Vats  
+**Email**: yashvardhanvats06@gmail.com  
+**GitHub**: https://github.com/Yashvar2004
+
+---
+
+*Document created: July 12, 2026*
